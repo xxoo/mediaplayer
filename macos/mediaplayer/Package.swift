@@ -1,0 +1,1 @@
+../../ios/mediaplayer/Package.swift
