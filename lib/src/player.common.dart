@@ -1,89 +1,87 @@
-import 'package:flutter/widgets.dart';
 import 'player.interface.dart';
 
-/// This type is used by [MediaplayerInterface] to show the current playback state.
+/// This type is used by [MediaplayerInterface.playbackState].
 enum PlaybackState { playing, paused, closed }
 
-/// This type is used by [MediaplayerInterface] to show the current buffer status.
+/// This type is used by [MediaplayerInterface.bufferRange].
 class BufferRange {
   static const empty = BufferRange(0, 0);
 
-  final int begin;
+  final int start;
   final int end;
-  const BufferRange(this.begin, this.end);
+  const BufferRange(this.start, this.end);
 }
 
-/// This type is used by [TrackInfo] to show the type of the track.
-enum TrackType { audio, video, subtitle }
+/// This type is used by [MediaInfo.subtitleTracks].
+class SubtitleInfo {
+  static SubtitleInfo fromMap(Map map) {
+    final format = map['format'] as String?;
+    final language = map['language'] as String?;
+    final title = map['title'] as String?;
+    return SubtitleInfo(
+      format: format == "" ? null : format,
+      language: language == "" ? null : language,
+      title: title == "" ? null : title,
+    );
+  }
 
-/// This type is used by [MediaInfo] to show information about a track.
-/// Only [type] is guaranteed to be non-null. Other information may not be available and may vary by platform.
-class TrackInfo {
-  static TrackInfo fromMap(Map map) {
-    final type = map['type'] as String;
+  final String? format;
+  final String? language;
+  final String? title;
+  const SubtitleInfo({
+    this.format,
+    this.language,
+    this.title,
+  });
+}
+
+/// This type is used by [MediaInfo.audioTracks].
+class AudioInfo {
+  static AudioInfo fromMap(Map map) {
     final format = map['format'] as String?;
     final language = map['language'] as String?;
     final title = map['title'] as String?;
     final bitRate = (map['bitRate'] as num?)?.toInt();
-    final videoSize =
-        map['width'] == null ||
-                map['height'] == null ||
-                map['width'] <= 0 ||
-                map['height'] <= 0
-            ? null
-            : Size(map['width'], map['height']);
-    final frameRate = map['frameRate'] as double?;
     final channels = (map['channels'] as num?)?.toInt();
     final sampleRate = (map['sampleRate'] as num?)?.toInt();
-    final isHdr = map['isHdr'] as bool?;
-    return TrackInfo(
-      type == 'audio'
-          ? TrackType.audio
-          : type == 'video'
-          ? TrackType.video
-          : TrackType.subtitle,
+    return AudioInfo(
       format: format == "" ? null : format,
       language: language == "" ? null : language,
       title: title == "" ? null : title,
-      isHdr: isHdr,
-      videoSize: videoSize,
-      frameRate: frameRate != null && frameRate > 0 ? frameRate : null,
       bitRate: bitRate != null && bitRate > 0 ? bitRate : null,
       channels: channels != null && channels > 0 ? channels : null,
       sampleRate: sampleRate != null && sampleRate > 0 ? sampleRate : null,
     );
   }
 
-  final TrackType type;
   final String? format;
   final String? language;
   final String? title;
   final int? bitRate;
-  final Size? videoSize;
-  final double? frameRate;
   final int? channels;
   final int? sampleRate;
-  final bool? isHdr;
-  const TrackInfo(
-    this.type, {
-    this.isHdr,
+  const AudioInfo({
     this.format,
     this.language,
     this.title,
-    this.videoSize,
-    this.frameRate,
     this.bitRate,
     this.channels,
     this.sampleRate,
   });
 }
 
-/// This type is used by [MediaplayerInterface] to show current media info.
+/// This type is used by [MediaplayerInterface.mediaInfo].
 /// [duration] == 0 means the media is realtime stream.
-/// [tracks] contains all the tracks of the media. The key is the track id. However, video tracks are only available on android/linux/hls.js.
+/// [audioTracks] and [subtitleTracks] are maps with track id as key.
 class MediaInfo {
   final int duration;
-  final Map<String, TrackInfo> tracks;
+  final Map<String, AudioInfo> audioTracks;
+  final Map<String, SubtitleInfo> subtitleTracks;
   final String source;
-  const MediaInfo(this.duration, this.tracks, this.source);
+  const MediaInfo(
+    this.duration,
+    this.audioTracks,
+    this.subtitleTracks,
+    this.source,
+  );
 }

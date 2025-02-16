@@ -10,7 +10,7 @@ let package = Package(
 		.macOS("12.0")
 	],
 	products: [
-		.library(name: "av-media-player", targets: ["mediaplayer"])
+		.library(name: "mediaplayer", targets: ["mediaplayer"])
 	],
 	dependencies: [],
 	targets: [

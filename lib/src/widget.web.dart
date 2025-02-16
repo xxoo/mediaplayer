@@ -2,7 +2,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'player.web.dart';
 
-Widget makeVideo(Mediaplayer player, Color backgroundColor, BoxFit videoFit) {
+Widget makeWidget(Mediaplayer player, Color backgroundColor, BoxFit videoFit) {
   if (player.videoSize.value == Size.zero) {
     return Container(
       color: backgroundColor,

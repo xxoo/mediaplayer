@@ -31,17 +31,7 @@
 
   <title>mediaplayer_example</title>
   <link rel="manifest" href="manifest.json"/>
-  <!--
-    DO NOT FOLLOW THE IMPLEMENTATION BELOW.
-
-    Please run `dart run mediaplayer:webinit` in your project directory instead.
-  -->
-  <script>
-    if (!Error().stack.startsWith('global code@')) {
-      document.write('<script src="https://cdn.jsdelivr.net/npm/hls.js"><\/script>');
-    }
-  </script>
-  <script src="MediaplayerPlugin.js" type="module"></script>
+  <script src="mediaplayer.js"></script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

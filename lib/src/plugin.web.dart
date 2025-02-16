@@ -4,8 +4,8 @@ import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 
 @JS()
 extension type MediaplayerPlugin._(JSObject _) implements JSObject {
-  static int _nextId = 0;
-  static final Map<int, MediaplayerPlugin> _instances = {};
+  static var _nextId = 0;
+  static final _instances = <int, MediaplayerPlugin>{};
 
   static MediaplayerPlugin create(JSFunction onmessage) {
     final instance = MediaplayerPlugin(onmessage);
@@ -30,7 +30,7 @@ extension type MediaplayerPlugin._(JSObject _) implements JSObject {
   external void pause();
   external void open(String source);
   external void close();
-  external void seekTo(int position);
+  external void seekTo(int position, bool fast);
   external void setVolume(double volume);
   external void setSpeed(double speed);
   external void setLooping(bool looping);
@@ -44,5 +44,6 @@ extension type MediaplayerPlugin._(JSObject _) implements JSObject {
   external bool setPictureInPicture(bool pictureInPicture);
   external void setBackgroundColor(int color);
   external void setVideoFit(String objectFit);
-  external void overrideTrack(String track, bool enabled);
+  external void setOverrideAudio(String? trackId);
+  external void setOverrideSubtitle(String? trackId);
 }

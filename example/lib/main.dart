@@ -16,21 +16,20 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   var _loading = true;
+
   @override
   Widget build(BuildContext context) => Stack(
-    textDirection: TextDirection.ltr,
-    alignment: Alignment.center,
-    children: [
-      MediaplayerView(
-        initSource:
-            'https://stream.mux.com/v69RSHhFelSm4701snP22dYz2jICy4E4FUyk02rW4gxRM.m3u8',
-        initAutoPlay: true,
-        onCreated:
-            (player) => player.loading.addListener(
-              () => setState(() => _loading = player.loading.value),
-            ),
-      ),
-      if (_loading) const CircularProgressIndicator(),
-    ],
-  );
+        textDirection: TextDirection.ltr,
+        alignment: Alignment.center,
+        children: [
+          MediaplayerView(
+            initSource:
+                'https://stream.mux.com/v69RSHhFelSm4701snP22dYz2jICy4E4FUyk02rW4gxRM.m3u8',
+            initAutoPlay: true,
+            onCreated: (player) => player.loading.addListener(
+                () => setState(() => _loading = player.loading.value)),
+          ),
+          if (_loading) const CircularProgressIndicator(),
+        ],
+      );
 }

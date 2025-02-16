@@ -211,7 +211,6 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 	uint16_t maxVideoHeight = 0;
 	int16_t overrideAudioTrack = -1;
 	int16_t overrideSubtitleTrack = -1;
-	int16_t overrideVideoTrack = -1;
 	bool looping = false;
 	bool showSubtitle = false;
 	uint8_t state = 0; //0: idle, 1: opening, 2: ready, 3: playing
@@ -361,6 +360,92 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		return -1;
 	}
 
+	void setPosition() {
+		if (!mediaPlayer.RealTimePlayback()) {
+			auto pos = playbackSession.Position().count() / 10000;
+			if (pos != position) {
+				position = pos;
+				if (eventSink) {
+					eventSink->Success(EncodableMap{
+						{ string("event"), string("position") },
+						{ string("value"), EncodableValue(position) }
+					});
+				}
+			}
+		}
+	}
+
+	void loadEnd() {
+		if (state == 1) {
+			auto playbackSession = mediaPlayer.PlaybackSession();
+			state = 2;
+			mediaPlayer.Volume(volume);
+			playbackSession.PlaybackRate(speed);
+			auto duration = playbackSession.NaturalDuration().count();
+			if (duration == INT64_MAX) {
+				duration = 0;
+			}
+			mediaPlayer.RealTimePlayback(duration == 0);
+			EncodableMap audioTracks{};
+			EncodableMap subtitleTracks{};
+			auto item = mediaPlayer.Source().as<MediaPlaybackItem>();
+			char id[16];
+			auto audiotracks = item.AudioTracks();
+			auto selectedAudioTrackId = getDefaultTrack(MediaTrackKind::Audio);
+			if (selectedAudioTrackId >= 0 && audiotracks.SelectedIndex() != selectedAudioTrackId) {
+				audiotracks.SelectedIndex(selectedAudioTrackId);
+			}
+			for (uint16_t i = 0; i < audiotracks.Size(); i++) {
+				auto track = audiotracks.GetAt(i);
+				auto props = track.GetEncodingProperties();
+				auto title = track.Name();
+				if (title.empty()) {
+					title = track.Label();
+				}
+				sprintf_s(id, "%d.%d", MediaTrackKind::Audio, i);
+				audioTracks[string(id)] = EncodableMap{
+					{ string("title"), to_string(title) },
+					{ string("language"), to_string(track.Language()) },
+					{ string("format"), to_string(props.Subtype()) },
+					{ string("bitRate"), EncodableValue((int32_t)props.Bitrate()) },
+					{ string("channels"), EncodableValue((int32_t)props.ChannelCount()) },
+					{ string("sampleRate"), EncodableValue((int32_t)props.SampleRate()) }
+				};
+			}
+			auto subtitletracks = item.TimedMetadataTracks();
+			auto selectedSubtitleTrackId = getDefaultTrack(MediaTrackKind::TimedMetadata);
+			for (uint16_t i = 0; i < subtitletracks.Size(); i++) {
+				auto track = subtitletracks.GetAt(i);
+				auto kind = track.TimedMetadataKind();
+				if (kind == TimedMetadataKind::Caption || kind == TimedMetadataKind::Subtitle || kind == TimedMetadataKind::ImageSubtitle) {
+					if (selectedSubtitleTrackId >= 0) {
+						subtitletracks.SetPresentationMode(i, i == selectedSubtitleTrackId ? TimedMetadataTrackPresentationMode::PlatformPresented : TimedMetadataTrackPresentationMode::Disabled);
+					}
+					auto title = track.Name();
+					if (title.empty()) {
+						title = track.Label();
+					}
+					sprintf_s(id, "%d.%d", MediaTrackKind::TimedMetadata, i);
+					subtitleTracks[string(id)] = EncodableMap{
+						{ string("title"), to_string(title) },
+						{ string("language"), to_string(track.Language()) },
+						{ string("format"), string(translateSubType(kind)) }
+					};
+				}
+			}
+			if (eventSink) {
+				eventSink->Success(EncodableMap{
+					{ string("event"), string("mediaInfo") },
+					{ string("audioTracks"), audioTracks },
+					{ string("subtitleTracks"), subtitleTracks },
+					{ string("duration"), EncodableValue(duration / 10000) },
+					{ string("source"), source }
+				});
+				setPosition();
+			}
+		}
+	}
+
 	public:
 	static void initGlobal() {
 		//init_apartment(apartment_type::single_threaded);
@@ -488,17 +573,8 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		playbackSession.PositionChanged([weakThis](MediaPlaybackSession playbackSession, auto) {
 			dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis, playbackSession]() {
 				auto sharedThis = weakThis.lock();
-				if (sharedThis && sharedThis->state > 1 && !sharedThis->mediaPlayer.RealTimePlayback()) {
-					auto position = playbackSession.Position().count() / 10000;
-					if (position != sharedThis->position) {
-						sharedThis->position = position;
-						if (sharedThis->eventSink) {
-							sharedThis->eventSink->Success(EncodableMap{
-								{ string("event"), string("position") },
-								{ string("value"), EncodableValue(sharedThis->position) }
-							});
-						}
-					}
+				if (sharedThis && sharedThis->state > 1) {
+					sharedThis->setPosition();
 				}
 			}));
 		});
@@ -506,10 +582,14 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		playbackSession.SeekCompleted([weakThis](auto, auto) {
 			dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis]() {
 				auto sharedThis = weakThis.lock();
-				if (sharedThis && sharedThis->state > 1 && sharedThis->eventSink) {
-					sharedThis->eventSink->Success(EncodableMap{
-						{ string("event"), string("seekEnd") }
-					});
+				if (sharedThis  && sharedThis->eventSink) {
+					if (sharedThis->state == 1) {
+						sharedThis->loadEnd();
+					} else if (sharedThis->state > 1) {
+						sharedThis->eventSink->Success(EncodableMap{
+							{ string("event"), string("seekEnd") }
+						});
+					}
 				}
 			}));
 		});
@@ -554,7 +634,7 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 								if (sharedThis->eventSink) {
 									sharedThis->eventSink->Success(EncodableMap{
 										{ string("event"), string("buffer") },
-										{ string("begin"), EncodableValue(pos / 10000) },
+										{ string("start"), EncodableValue(pos / 10000) },
 										{ string("end"), EncodableValue(sharedThis->bufferPosition) }
 									});
 								}
@@ -601,100 +681,19 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		});
 
 		mediaPlayer.MediaOpened([weakThis](auto, auto) {
-			dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis]() {
-				auto sharedThis = weakThis.lock();
-				if (sharedThis && sharedThis->state == 1) {
-					auto playbackSession = sharedThis->mediaPlayer.PlaybackSession();
-					sharedThis->state = 2;
-					sharedThis->mediaPlayer.Volume(sharedThis->volume);
-					playbackSession.PlaybackRate(sharedThis->speed);
-					auto duration = playbackSession.NaturalDuration().count();
-					if (duration == INT64_MAX) {
-						duration = 0;
+			auto sharedThis = weakThis.lock();
+			auto playbackSession = mediaPlayer.PlaybackSession();
+			if (sharedThis && position > 0 && playbackSession.NaturalDuration().count() != INT64_MAX) {
+				playbackSession.Position(chrono::milliseconds(position));
+				position = 0;
+			} else {
+				dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis]() {
+					auto sharedThis = weakThis.lock();
+					if (sharedThis) {
+						sharedThis->loadEnd();
 					}
-					sharedThis->mediaPlayer.RealTimePlayback(duration == 0);
-					EncodableMap tracks{};
-					auto item = sharedThis->mediaPlayer.Source().as<MediaPlaybackItem>();
-					char id[16];
-					auto audioTracks = item.AudioTracks();
-					auto selectedAudioTrackId = sharedThis->getDefaultTrack(MediaTrackKind::Audio);
-					if (selectedAudioTrackId >= 0 && audioTracks.SelectedIndex() != selectedAudioTrackId) {
-						audioTracks.SelectedIndex(selectedAudioTrackId);
-					}
-					for (uint16_t i = 0; i < audioTracks.Size(); i++) {
-						auto track = audioTracks.GetAt(i);
-						auto props = track.GetEncodingProperties();
-						auto title = track.Name();
-						if (title.empty()) {
-							title = track.Label();
-						}
-						sprintf_s(id, "%d.%d", MediaTrackKind::Audio, i);
-						tracks[string(id)] = EncodableMap{
-							{ string("type"), string("audio") },
-							{ string("title"), to_string(title) },
-							{ string("language"), to_string(track.Language()) },
-							{ string("format"), to_string(props.Subtype()) },
-							{ string("bitRate"), EncodableValue((int32_t)props.Bitrate()) },
-							{ string("channels"), EncodableValue((int32_t)props.ChannelCount()) },
-							{ string("sampleRate"), EncodableValue((int32_t)props.SampleRate()) }
-						};
-					}
-					auto videoTracks = item.VideoTracks();
-					auto selectedVideoTrackId = sharedThis->getDefaultTrack(MediaTrackKind::Video);
-					if (selectedVideoTrackId >= 0 && videoTracks.SelectedIndex() != selectedVideoTrackId) {
-						videoTracks.SelectedIndex(selectedVideoTrackId);
-					}
-					for (uint16_t i = 0; i < videoTracks.Size(); i++) {
-						auto track = videoTracks.GetAt(i);
-						auto props = track.GetEncodingProperties();
-						auto title = track.Name();
-						if (title.empty()) {
-							title = track.Label();
-						}
-						sprintf_s(id, "%d.%d", MediaTrackKind::Video, i);
-						tracks[string(id)] = EncodableMap{
-							{ string("type"), string("video") },
-							{ string("title"), to_string(title) },
-							{ string("language"), to_string(track.Language()) },
-							{ string("format"), to_string(props.Subtype()) },
-							{ string("bitRate"), EncodableValue((int32_t)props.Bitrate()) },
-							{ string("frameRate"), EncodableValue((double)props.FrameRate().Numerator() / props.FrameRate().Denominator()) },
-							{ string("width"), EncodableValue((double)props.Width()) },
-							{ string("height"), EncodableValue((double)props.Height()) }
-						};
-					}
-					auto subtitleTracks = item.TimedMetadataTracks();
-					auto selectedSubtitleTrackId = sharedThis->getDefaultTrack(MediaTrackKind::TimedMetadata);
-					for (uint16_t i = 0; i < subtitleTracks.Size(); i++) {
-						auto track = subtitleTracks.GetAt(i);
-						auto kind = track.TimedMetadataKind();
-						if (kind == TimedMetadataKind::Caption || kind == TimedMetadataKind::Subtitle || kind == TimedMetadataKind::ImageSubtitle) {
-							if (selectedSubtitleTrackId >= 0) {
-								subtitleTracks.SetPresentationMode(i, i == selectedSubtitleTrackId ? TimedMetadataTrackPresentationMode::PlatformPresented : TimedMetadataTrackPresentationMode::Disabled);
-							}
-							auto title = track.Name();
-							if (title.empty()) {
-								title = track.Label();
-							}
-							sprintf_s(id, "%d.%d", MediaTrackKind::TimedMetadata, i);
-							tracks[string(id)] = EncodableMap{
-								{ string("type"), string("sub") },
-								{ string("title"), to_string(title) },
-								{ string("language"), to_string(track.Language()) },
-								{ string("format"), string(translateSubType(kind)) }
-							};
-						}
-					}
-					if (sharedThis->eventSink) {
-						sharedThis->eventSink->Success(EncodableMap{
-							{ string("event"), string("mediaInfo") },
-							{ string("tracks"), tracks },
-							{ string("duration"), EncodableValue(duration / 10000) },
-							{ string("source"), sharedThis->source }
-						});
-					}
-				}
-			}));
+				}));
+			}
 		});
 
 		mediaPlayer.MediaEnded([weakThis](auto, auto) {
@@ -758,7 +757,6 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		bufferPosition = 0;
 		overrideAudioTrack = -1;
 		overrideSubtitleTrack = -1;
-		overrideVideoTrack = -1;
 		source = "";
 		auto src = mediaPlayer.Source();
 		if (src) {
@@ -783,7 +781,9 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 
 	void seekTo(int64_t pos) {
 		auto playbackSession = mediaPlayer.PlaybackSession();
-		if (eventSink && (!mediaPlayer.Source() || mediaPlayer.RealTimePlayback() || playbackSession.Position().count() / 10000 == pos)) {
+		if (state == 1) {
+			position = pos;
+		} else if (eventSink && (!mediaPlayer.Source() || mediaPlayer.RealTimePlayback() || playbackSession.Position().count() / 10000 == pos)) {
 			eventSink->Success(EncodableMap{
 				{ string("event"), string("seekEnd") }
 			});
@@ -813,7 +813,7 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 	void setMaxResolution(int16_t width, uint16_t height) {
 		maxVideoWidth = width;
 		maxVideoHeight = height;
-		if (state > 1 && overrideVideoTrack < 0) {
+		if (state > 1) {
 			auto i = getDefaultTrack(MediaTrackKind::Video);
 			if (i >= 0) {
 				auto tracks = mediaPlayer.Source().as<MediaPlaybackItem>().VideoTracks();
@@ -826,7 +826,7 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 
 	void setMaxBitRate(uint32_t bitrate) {
 		maxBitrate = bitrate;
-		if (state > 1 && overrideVideoTrack < 0) {
+		if (state > 1) {
 			auto i = getDefaultTrack(MediaTrackKind::Video);
 			if (i >= 0) {
 				auto tracks = mediaPlayer.Source().as<MediaPlaybackItem>().VideoTracks();
@@ -870,10 +870,6 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 			auto tracks = item.AudioTracks();
 			tracks.SelectedIndex(enabled ? trackId : max(getDefaultTrack(kind), (int16_t)0));
 			overrideAudioTrack = enabled ? trackId : -1;
-		} else if (kind == MediaTrackKind::Video) {
-			auto tracks = item.VideoTracks();
-			tracks.SelectedIndex(enabled ? trackId : max(getDefaultTrack(kind), (int16_t)0));
-			overrideVideoTrack = enabled ? trackId : -1;
 		} else if (kind == MediaTrackKind::TimedMetadata) {
 			auto tracks = item.TimedMetadataTracks();
 			if (!enabled) {
@@ -938,7 +934,7 @@ class MediaplayerPlugin : public Plugin {
 				players[call.arguments()->LongValue()]->pause();
 			} else if (methodName == "seekTo") {
 				auto& args = get<EncodableMap>(*call.arguments());
-				players[args.at(Id).LongValue()]->seekTo(args.at(Value).LongValue());
+				players[args.at(Id).LongValue()]->seekTo(args.at(string("position")).LongValue());
 			} else if (methodName == "setVolume") {
 				auto& args = get<EncodableMap>(*call.arguments());
 				players[args.at(Id).LongValue()]->setVolume((float)get<double>(args.at(Value)));

@@ -4,7 +4,6 @@ import android.graphics.Color
 import android.graphics.PorterDuff
 import android.os.Handler
 import androidx.media3.common.C
-import androidx.media3.common.ColorInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -14,6 +13,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
@@ -22,13 +22,6 @@ import kotlin.math.roundToInt
 
 @UnstableApi
 class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : EventChannel.StreamHandler, Player.Listener, SurfaceProducer.Callback {
-	companion object {
-		private val trackTypes = mapOf(
-			C.TRACK_TYPE_VIDEO to "video",
-			C.TRACK_TYPE_AUDIO to "audio",
-			C.TRACK_TYPE_TEXT to "sub"
-		)
-	}
 	private val surfaceProducer = binding.textureRegistry.createSurfaceProducer()
 	private val subSurfaceProducer = binding.textureRegistry.createSurfaceProducer()
 	val id = surfaceProducer.id().toInt()
@@ -46,7 +39,7 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 	private var watching = false
 	private var buffering = false
 	private var bufferPosition = 0L
-	private var state: UByte = 0U //0: idle, 1: opening, 2: ready, 3: playing
+	private var state = 0U //0: idle, 1: opening, 2: ready, 3: playing
 	private var source: String? = null
 	private var seeking = false
 	private var networking = false
@@ -79,7 +72,12 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 			networking = true
 		}
 		try {
-			exoPlayer.setMediaItem(if (url.contains(".m3u8")) MediaItem.Builder().setMimeType(MimeTypes.APPLICATION_M3U8).setUri(url).build() else MediaItem.fromUri(url))
+			exoPlayer.setMediaItem(
+				if (url.contains(".m3u8", ignoreCase = true)) MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_M3U8).build()
+				else if (url.contains(".mpd", ignoreCase = true)) MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_MPD).build()
+				else if (url.contains(".ism/Manifest", ignoreCase = true)) MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_SS).build()
+				else MediaItem.fromUri(url)
+			)
 			exoPlayer.prepare()
 			state = 1U
 			this.source = source
@@ -110,7 +108,7 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 	}
 
 	fun play(): Any? {
-		if (state.compareTo(2U) == 0) {
+		if (state == 2U) {
 			state = 3U
 			justPlay()
 			if (exoPlayer.playbackState == Player.STATE_BUFFERING) {
@@ -131,12 +129,14 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 		return null
 	}
 
-	fun seekTo(pos: Long): Any? {
-		if (exoPlayer.isCurrentMediaItemLive || exoPlayer.currentPosition == pos) {
+	fun seekTo(pos: Long, fast: Boolean): Any? {
+		if (state == 1U) {
+			position = pos
+		} else if (exoPlayer.isCurrentMediaItemLive || exoPlayer.currentPosition == pos) {
 			eventSink?.success(mapOf("event" to "seekEnd"))
 		} else {
 			seeking = true
-			exoPlayer.seekTo(pos)
+			seek(pos, fast)
 		}
 		return null
 	}
@@ -189,7 +189,7 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 	fun overrideTrack(groupId: Int, trackId: Int, enabled: Boolean): Any? {
 		if (state > 1U) {
 			val group = exoPlayer.currentTracks.groups[groupId]
-			if (group != null && trackTypes.contains(group.type) && group.isTrackSupported(trackId, false)) {
+			if (group != null && (group.type == C.TRACK_TYPE_AUDIO || group.type == C.TRACK_TYPE_TEXT) && group.isTrackSupported(trackId, false)) {
 				if (enabled) {
 					exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon().setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, trackId)).build()
 				} else if (exoPlayer.trackSelectionParameters.overrides.contains(group.mediaTrackGroup) && exoPlayer.trackSelectionParameters.overrides[group.mediaTrackGroup]!!.trackIndices.contains(trackId)) {
@@ -201,9 +201,14 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 	}
 
 	private fun clearSubtitle() {
-		//val canvas = subSurface.lockHardwareCanvas()
-		//canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-		//subSurface.unlockCanvasAndPost(canvas)
+		val canvas = subSurfaceProducer.surface.lockHardwareCanvas()
+		canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+		subSurfaceProducer.surface.unlockCanvasAndPost(canvas)
+	}
+
+	private fun seek(pos: Long, fast: Boolean) {
+		exoPlayer.setSeekParameters(if (fast) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT)
+		exoPlayer.seekTo(pos)
 	}
 
 	private fun seekEnd() {
@@ -214,9 +219,52 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 		eventSink?.success(mapOf("event" to "seekEnd"))
 	}
 
+	private fun loadEnd() {
+		state = 2U
+		exoPlayer.volume = volume
+		if (exoPlayer.isCurrentMediaItemLive && speed != 1F) {
+			setSpeed(1F)
+		}
+		val audioTracks = mutableMapOf<String, MutableMap<String, Any?>>()
+		val subtitleTracks = mutableMapOf<String, MutableMap<String, Any?>>()
+		for (i in 0 until exoPlayer.currentTracks.groups.size) {
+			val group = exoPlayer.currentTracks.groups[i]
+			if (group.type == C.TRACK_TYPE_AUDIO || group.type == C.TRACK_TYPE_TEXT) {
+				for (j in 0 until group.length) {
+					if (group.isTrackSupported(j, false)) {
+						val format = group.getTrackFormat(j)
+						if (format.roleFlags != C.ROLE_FLAG_TRICK_PLAY) {
+							val track = mutableMapOf<String, Any?>(
+								"title" to format.label,
+								"language" to format.language,
+								"format" to if (format.codecs == null) format.sampleMimeType else format.codecs
+							)
+							if (group.type == C.TRACK_TYPE_AUDIO) {
+								track["channels"] = format.channelCount
+								track["sampleRate"] = format.sampleRate
+								track["bitRate"] = if (format.averageBitrate > 0) format.averageBitrate else format.bitrate
+								audioTracks["$i.$j"] = track
+							} else {
+								subtitleTracks["$i.$j"] = track
+							}
+						}
+					}
+				}
+			}
+		}
+		eventSink?.success(mapOf(
+			"event" to "mediaInfo",
+			"duration" to if (exoPlayer.isCurrentMediaItemLive) 0 else exoPlayer.duration,
+			"audioTracks" to audioTracks,
+			"subtitleTracks" to subtitleTracks,
+			"source" to source
+		))
+		watchPosition()
+	}
+
 	private fun justPlay() {
 		if (exoPlayer.playbackState == Player.STATE_ENDED) {
-			exoPlayer.seekTo(0)
+			seek(0, true)
 		}
 		exoPlayer.playWhenReady = true
 		if (!watching && !exoPlayer.isCurrentMediaItemLive) {
@@ -242,7 +290,7 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 			bufferPosition = bufferPos
 			eventSink?.success(mapOf(
 				"event" to "buffer",
-				"begin" to exoPlayer.currentPosition,
+				"start" to exoPlayer.currentPosition,
 				"end" to bufferPosition
 			))
 		}
@@ -285,47 +333,19 @@ class Mediaplayer(private val binding: FlutterPlugin.FlutterPluginBinding) : Eve
 	override fun onPlaybackStateChanged(playbackState: Int) {
 		super.onPlaybackStateChanged(playbackState)
 		if (seeking && (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED)) {
-			seekEnd()
+			if (state == 1U) {
+				loadEnd()
+			} else {
+				seekEnd()
+			}
 		} else if (playbackState == Player.STATE_READY) {
-			if (state.compareTo(1U) == 0) {
-				state = 2U
-				exoPlayer.volume = volume
-				val allTracks = mutableMapOf<String, MutableMap<String, Any?>>()
-				for (i in 0 until exoPlayer.currentTracks.groups.size) {
-					val group = exoPlayer.currentTracks.groups[i]
-					if (trackTypes.contains(group.type)) {
-						for (j in 0 until group.length) {
-							if (group.isTrackSupported(j, false)) {
-								val format = group.getTrackFormat(j)
-								if (format.roleFlags != C.ROLE_FLAG_TRICK_PLAY) {
-									val track = mutableMapOf<String, Any?>(
-										"type" to trackTypes[group.type]!!,
-										"title" to format.label,
-										"language" to format.language,
-										"format" to if (format.codecs == null) format.sampleMimeType else format.codecs,
-										"bitRate" to if (format.averageBitrate > 0) format.averageBitrate else format.bitrate
-									)
-									if (group.type == C.TRACK_TYPE_VIDEO) {
-										track["width"] = format.width.toFloat()
-										track["height"] = format.height.toFloat()
-										track["frameRate"] = format.frameRate
-										track["isHdr"] = ColorInfo.isTransferHdr(format.colorInfo)
-									} else if (group.type == C.TRACK_TYPE_AUDIO) {
-										track["channels"] = format.channelCount
-										track["sampleRate"] = format.sampleRate
-									}
-									allTracks["$i.$j"] = track
-								}
-							}
-						}
-					}
+			if (state == 1U) {
+				if (position == 0L) {
+					loadEnd()
+				} else {
+					seek(position, true)
+					position = 0L
 				}
-				eventSink?.success(mapOf(
-					"event" to "mediaInfo",
-					"duration" to if (exoPlayer.isCurrentMediaItemLive) 0 else exoPlayer.duration,
-					"tracks" to allTracks,
-					"source" to source
-				))
 			} else if (state > 2U) {
 				eventSink?.success(mapOf(
 					"event" to "loading",
@@ -464,7 +484,7 @@ class MediaplayerPlugin: FlutterPlugin {
 					result.success(players[call.arguments as Int]?.pause())
 				}
 				"seekTo" -> {
-					result.success(players[call.argument<Int>("id")!!]?.seekTo(call.argument<Long>("value")!!))
+					result.success(players[call.argument<Int>("id")!!]?.seekTo(call.argument<Long>("position")!!, call.argument<Boolean>("fast")!!))
 				}
 				"setVolume" -> {
 					result.success(players[call.argument<Int>("id")!!]?.setVolume(call.argument<Float>("value")!!))

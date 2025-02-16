@@ -1,6 +1,11 @@
-const isSubtitle = track => ['subtitles', 'captions', 'forced'].includes(track.kind),
-	getTrackId = (trackList, i) => trackList[i].id ? +trackList[i].id : i,
-	getBestMatchByLanguage = (langArr, langs) => {
+globalThis.MediaplayerPlugin = class {
+	static #isSubtitle(track) {
+		return ['subtitles', 'captions', 'forced'].includes(track.kind);
+	}
+	static #getTrackId(trackList, i) {
+		return trackList[i].id ? +trackList[i].id : i;
+	}
+	static #getBestMatchByLanguage(langArr, langs) {
 		if (langs.size === 0) {
 			return -1;
 		} else {
@@ -17,14 +22,14 @@ const isSubtitle = track => ['subtitles', 'captions', 'forced'].includes(track.k
 					}
 				}
 			}
-			let j = getBestMatch(lang2);
+			let j = MediaplayerPlugin.#getBestMatch(lang2);
 			if (j < 0) {
-				j = getBestMatch(lang1);
+				j = MediaplayerPlugin.#getBestMatch(lang1);
 			}
 			return j;
 		}
-	},
-	getBestMatch = langs => {
+	}
+	static #getBestMatch(langs) {
 		if (langs.size === 1) {
 			return langs.keys().next().value;
 		} if (langs.size > 1) {
@@ -40,11 +45,10 @@ const isSubtitle = track => ['subtitles', 'captions', 'forced'].includes(track.k
 		} else {
 			return -1;
 		}
-	};
-
-self.MediaplayerPlugin = class {
+	}
 	#dom;
 	#hls;
+	#dash;
 	#state = 0; //0: idle, 1: opening, 2: ready, 3: playing
 	#looping = false;
 	#autoPlay = false;
@@ -56,7 +60,6 @@ self.MediaplayerPlugin = class {
 	#maxVideoHeight = Infinity;
 	#overrideAudioTrack = -1;
 	#overrideSubtitleTrack = -1;
-	#overrideVideoTrack = -1;
 	#showSubtitle = false;
 	#live = false;
 	#source = '';
@@ -126,7 +129,7 @@ self.MediaplayerPlugin = class {
 				if (this.#dom.buffered.start(i) <= this.#dom.currentTime && end >= this.#dom.currentTime) {
 					this.#sendMessage({
 						event: 'buffer',
-						begin: this.#dom.currentTime * 1000 | 0,
+						start: this.#dom.currentTime * 1000 | 0,
 						end: end * 1000 | 0
 					});
 					break;
@@ -136,11 +139,11 @@ self.MediaplayerPlugin = class {
 	}
 
 	#getDefaultAudioTrack = lang => {
-		const langs = new Map(this.#hls ? this.#hls.audioTracks.map((v, i) => [i, v.lang ? v.lang.split('-') : []]) : Array.prototype.map.call(this.#dom.audioTracks ?? [], (v, i) => [v.id ? +v.id : i, v.language.split('-')]));
+		const langs = new Map(this.#hls ? this.#hls.audioTracks.map((v, i) => [i, v.lang ? v.lang.split('-') : []]) : this.#dash ? this.#dash.getTracksFor('audio').map(v => [v.index, v.lang ? v.lang.split('-') : []]) : Array.prototype.map.call(this.#dom.audioTracks ?? [], (v, i) => [v.id ? +v.id : i, v.language.split('-')]));
 		if (langs.size === 0) {
 			return -1;
 		} else {
-			let j = lang ? getBestMatchByLanguage(lang.split('-'), langs) : -1;
+			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
 			if (j < 0) {
 				if (this.#hls) {
 					j = 0;
@@ -149,10 +152,12 @@ self.MediaplayerPlugin = class {
 							j = i;
 						}
 					}
-				} else {
+				} else if (this.#dash) {
+					j = this.#dash.getTracksFor('audio').sort((a, b) => a.selectionPriority - b.selectionPriority)[0].index;
+				} else if (this.#dom.audioTracks) {
 					for (let i = 0; i < this.#dom.audioTracks.length; i++) {
 						if (j < 0 || this.#dom.audioTracks[i].kind === 'main') {
-							j = getTrackId(this.#dom.audioTracks, i);
+							j = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i);
 						}
 					}
 				}
@@ -161,11 +166,11 @@ self.MediaplayerPlugin = class {
 		}
 	};
 	#getDefaultSubtitleTrack = lang => {
-		const langs = new Map(Array.prototype.map.call(this.#dom.textTracks, (v, i) => isSubtitle(v) ? [v.id ? +v.id : i, v.language.split('-')] : null).filter(v => v));
+		const langs = new Map(Array.prototype.map.call(this.#dom.textTracks, (v, i) => MediaplayerPlugin.#isSubtitle(v) ? [v.id ? +v.id : i, v.language.split('-')] : null).filter(v => v));
 		if (langs.size === 0) {
 			return -1;
 		} else {
-			let j = lang ? getBestMatchByLanguage(lang.split('-'), langs) : -1;
+			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
 			if (j < 0) {
 				j = langs.keys().next().value;
 			}
@@ -175,15 +180,17 @@ self.MediaplayerPlugin = class {
 	#setAudioTrack(track) {
 		if (this.#hls) {
 			this.#hls.audioTrack = track;
+		} else if (this.#dash) {
+			this.#dash.setCurrentTrack(this.#dash.getTracksFor('audio').filter(v => v.index === track)[0]);
 		} else if (this.#dom.audioTracks) {
 			for (let i = 0; i < this.#dom.audioTracks.length; i++) {
-				this.#dom.audioTracks[i].enabled = getTrackId(this.#dom.audioTracks, i) === track;
+				this.#dom.audioTracks[i].enabled = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i) === track;
 			}
 		}
 	};
 	#setSubtitleTrack(track) {
 		for (let i = 0; i < this.#dom.textTracks.length; i++) {
-			this.#dom.textTracks[i].mode = getTrackId(this.#dom.textTracks, i) === track ? 'showing' : 'disabled';
+			this.#dom.textTracks[i].mode = MediaplayerPlugin.#getTrackId(this.#dom.textTracks, i) === track ? 'showing' : 'disabled';
 		}
 	};
 	#setMaxVideoTrack() {
@@ -192,7 +199,7 @@ self.MediaplayerPlugin = class {
 				this.#hls.autoLevelCapping = -1;
 			} else {
 				for (let i = this.#hls.levels.length - 1; i >= 0; i--) {
-					if (this.#hls.levels[i].height <= this.#maxVideoHeight && this.#hls.levels[i].width <= this.#maxVideoWidth && this.#hls.levels[i].averageBitrate <= this.#maxBitrate) {
+					if (this.#hls.levels[i].height <= this.#maxVideoHeight && this.#hls.levels[i].width <= this.#maxVideoWidth && this.#hls.levels[i].bitrate <= this.#maxBitrate) {
 						this.#hls.autoLevelCapping = i;
 					}
 				}
@@ -218,7 +225,7 @@ self.MediaplayerPlugin = class {
 	}
 	#setDefaultTrack(type) {
 		if (type === 0) {
-			this.#overrideVideoTrack = this.#hls.currentLevel = this.#hls.nextLevel = this.#hls.loadLevel = -1;
+			this.#hls.currentLevel = this.#hls.nextLevel = this.#hls.loadLevel = -1;
 		} else if (type === 1) {
 			this.#overrideAudioTrack = -1;
 			this.#setAudioTrack(this.#getDefaultTrack(type));
@@ -273,7 +280,7 @@ self.MediaplayerPlugin = class {
 				let id = -1;
 				for (let i = 0; i < this.#dom.textTracks.length; i++) {
 					if (this.#dom.textTracks[i].mode === 'showing') {
-						id = getTrackId(this.#dom.textTracks, i);
+						id = MediaplayerPlugin.#getTrackId(this.#dom.textTracks, i);
 						break;
 					}
 				}
@@ -287,9 +294,8 @@ self.MediaplayerPlugin = class {
 					} else if (id !== this.#overrideSubtitleTrack && (this.#overrideSubtitleTrack >= 0 || id !== this.#getDefaultTrack(2))) {
 						this.#overrideSubtitleTrack = id;
 						this.#sendMessage({
-							event: 'overrideTrack',
-							id: `2.${id}`,
-							enabled: true
+							event: 'overrideSubtitle',
+							value: `${id}`
 						});
 					}
 				} else if (id >= 0) {
@@ -301,9 +307,8 @@ self.MediaplayerPlugin = class {
 					if (id !== this.#overrideSubtitleTrack) {
 						this.#overrideSubtitleTrack = id;
 						this.#sendMessage({
-							event: 'overrideTrack',
-							id: `2.${id}`,
-							enabled: true
+							event: 'overrideSubtitle',
+							value: `${id}`
 						});
 					}
 				}
@@ -421,57 +426,62 @@ self.MediaplayerPlugin = class {
 				}
 				this.#setDefaultTrack(1);
 				this.#setDefaultTrack(2);
+				if (this.#live) {
+					this.#dom.playbackRate = 1;
+				}
 				if (this.#initPosition > 0 && !this.#live) {
-					this.#dom.currentTime = Math.min(this.#initPosition / 1000, this.#dom.duration);
-					if (this.#hls) { // hls.js may stop loading after seeking on start
-						this.#hls.startLoad(this.#dom.currentTime);
+					const t = Math.min(this.#initPosition / 1000, this.#dom.duration);
+					if (this.#dom.fastSeek) {
+						this.#dom.fastSeek(t);
+					} else {
+						this.#dom.currentTime = t;
 					}
+					/*if (this.#hls) { // hls.js may stop loading after seeking on start
+						this.#hls.startLoad(this.#dom.currentTime);
+					}*/
 				}
 			}
 		};
 		this.#dom.oncanplay = () => {
 			if (this.#state === 1) {
 				this.#state = 2;
-				const tracks = {};
+				const audioTracks = {};
 				if (this.#hls) {
-					for (let i = 0; i < this.#hls.levels.length; i++) {
-						tracks[`0.${i}`] = {
-							type: 'video',
-							title: this.#hls.levels[i].name,
-							width: this.#hls.levels[i].width,
-							height: this.#hls.levels[i].height,
-							codec: this.#hls.levels[i].videoCodec,
-							bitrate: this.#hls.levels[i].averageBitrate,
-							frameRate: this.#hls.levels[i].frameRate
-						};
-					}
 					for (let i = 0; i < this.#hls.audioTracks.length; i++) {
-						tracks[`1.${i}`] = {
-							type: 'audio',
+						audioTracks[i] = {
 							title: this.#hls.audioTracks[i].name,
 							language: this.#hls.audioTracks[i].lang,
-							codec: this.#hls.audioTracks[i].audioCodec,
-							bitrate: this.#hls.audioTracks[i].bitrate,
+							format: this.#hls.audioTracks[i].audioCodec,
+							bitRate: this.#hls.audioTracks[i].bitrate,
 							channels: this.#hls.audioTracks[i].channels | 0
+						};
+					}
+				} else if (this.#dash) {
+					const tracks = this.#dash.getTracksFor('audio');
+					for (let i = 0; i < tracks.length; i++) {
+						const track = tracks[i];
+						audioTracks[track.index] = {
+							title: track.label,
+							language: track.lang,
+							format: track.codec
 						};
 					}
 				} else if (this.#dom.audioTracks) {
 					for (let i = 0; i < this.#dom.audioTracks.length; i++) {
-						tracks[`1.${getTrackId(this.#dom.audioTracks, i)}`] = {
-							type: 'audio',
+						audioTracks[MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i)] = {
 							title: this.#dom.audioTracks[i].label,
 							language: this.#dom.audioTracks[i].language,
 							format: this.#dom.audioTracks[i].configuration?.codec,
-							bitrate: this.#dom.audioTracks[i].configuration?.bitrate,
+							bitRate: this.#dom.audioTracks[i].configuration?.bitrate,
 							channels: this.#dom.audioTracks[i].configuration?.numberOfChannels,
 							sampleRate: this.#dom.audioTracks[i].configuration?.sampleRate
 						};
 					}
 				}
+				const subtitleTracks = {};
 				for (let i = 0; i < this.#dom.textTracks.length; i++) {
-					if (isSubtitle(this.#dom.textTracks[i])) {
-						tracks[`2.${getTrackId(this.#dom.textTracks, i)}`] = {
-							type: 'text',
+					if (MediaplayerPlugin.#isSubtitle(this.#dom.textTracks[i])) {
+						subtitleTracks[MediaplayerPlugin.#getTrackId(this.#dom.textTracks, i)] = {
 							title: this.#dom.textTracks[i].label,
 							language: this.#dom.textTracks[i].language,
 							format: this.#dom.textTracks[i].kind
@@ -485,7 +495,8 @@ self.MediaplayerPlugin = class {
 				this.#sendMessage({
 					event: 'mediaInfo',
 					duration: this.#live ? 0 : this.#dom.duration * 1000 | 0,
-					tracks: tracks,
+					audioTracks: audioTracks,
+					subtitleTracks: subtitleTracks,
 					source: this.#source
 				});
 				if (this.#initPosition > 0) {
@@ -519,6 +530,37 @@ self.MediaplayerPlugin = class {
 			this.#hls.loadSource(url);
 			// detect live stream for hls.js
 			this.#hls.once(Hls.Events.LEVEL_LOADED, (event, data) => this.#live = data.details.live);
+		} else if (/\.mpd|\.ism\/Manifest/i.test(url) && typeof Dash === 'function') {
+			this.#dash = Dash();
+			// disable ttml since it requires additional container for rendering
+			this.#dash.registerCustomCapabilitiesFilter(representation => !/(^|\W)stpp|ttml(\W|$)/.test(representation.codecs ?? representation.mimeType));
+			switchRuleClass.__dashjs_factory_name = 'userLimitingRule';
+			this.#dash.addABRCustomRule('qualitySwitchRules', 'userLimitingRule', Dash.FactoryMaker.getClassFactory(switchRuleClass));
+			this.#dash.initialize(this.#dom, url, false);
+			const player = this;
+			function switchRuleClass() {
+				const context = this.context,
+					SwitchRequest = Dash.FactoryMaker.getClassFactoryByName('SwitchRequest');
+				return {
+					getSwitchRequest(rulesContext) {
+						const switchRequest = SwitchRequest(context).create(),
+							representation = rulesContext.getRepresentation();
+						if (representation.mediaInfo.type === 'video') {
+							const abrController = rulesContext.getAbrController();
+							let i = representation;
+							while (i.absoluteIndex > 0 && (i.width > player.#maxVideoWidth || i.height > player.#maxVideoHeight || i.bandwidth > player.#maxBitrate)) {
+								i = abrController.getRepresentationByAbsoluteIndex(i.absoluteIndex - 1, i.mediaInfo);
+							}
+							if (i != representation) {
+								switchRequest.representation = i;
+								switchRequest.reason = 'userLimitingRule';
+								switchRequest.priority = SwitchRequest.PRIORITY.STRONG;
+							}
+						}
+						return switchRequest;
+					}
+				};
+			}
 		} else {
 			this.#dom.src = url;
 			this.#dom.load();
@@ -535,9 +577,8 @@ self.MediaplayerPlugin = class {
 						if (id >= 0 && id !== this.#overrideAudioTrack && (this.#overrideAudioTrack >= 0 || id !== this.#getDefaultTrack(1))) {
 							this.#overrideAudioTrack = id;
 							this.#sendMessage({
-								event: 'overrideTrack',
-								id: `1.${id}`,
-								enabled: true
+								event: 'overrideAudio',
+								value: `${id}`
 							});
 						}
 					}
@@ -565,6 +606,9 @@ self.MediaplayerPlugin = class {
 			this.#hls.detachMedia();
 			this.#hls.destroy();
 			this.#hls = null;
+		} else if (this.#dash) {
+			this.#dash.destroy();
+			this.#dash = null;
 		} else {
 			this.#dom.removeAttribute('src');
 			if (this.#dom.audioTracks) {
@@ -589,11 +633,15 @@ self.MediaplayerPlugin = class {
 			this.#dom.pause();
 		}
 	}
-	seekTo(position) {
+	seekTo(position, fast) {
 		if (this.#state === 1) {
 			this.#initPosition = position;
 		} else if (this.#state > 1) {
-			this.#dom.currentTime = position / 1000;
+			if (fast && this.#dom.fastSeek) {
+				this.#dom.fastSeek(position / 1000);
+			} else {
+				this.#dom.currentTime = position / 1000;
+			}
 		}
 	}
 	setVolume(volume) {
@@ -689,34 +737,20 @@ self.MediaplayerPlugin = class {
 			this.#dom.style.backgroundColor = `#${m[2]}${m[1]}`;
 		}
 	}
-	overrideTrack(track, enabled) {
-		const v = track.split('.'),
-			type = v[0] | 0,
-			id = v[1] | 0;
-		if (type === 0) {
-			if (this.#hls) {
-				if (this.#overrideVideoTrack !== id && enabled) {
-					this.#overrideVideoTrack = this.#hls.currentLevel = this.#hls.nextLevel = this.#hls.loadLevel = id;
-				} else if (this.#overrideVideoTrack === id && !enabled) {
-					this.#setDefaultTrack(type);
-				}
-			}
-		} else if (type === 1) {
-			if (this.#overrideAudioTrack !== id && enabled) {
-				this.#overrideAudioTrack = id;
-				this.#setAudioTrack(id);
-			} else if (this.#overrideAudioTrack === id && !enabled) {
-				this.#setDefaultTrack(type);
-			}
-		} else if (type === 2) {
-			if (this.#overrideSubtitleTrack !== id && enabled) {
-				this.#overrideSubtitleTrack = id;
-				if (this.#showSubtitle) {
-					this.#setSubtitleTrack(id);
-				}
-			} else if (this.#overrideSubtitleTrack === id && !enabled) {
-				this.#setDefaultTrack(type);
-			}
+	setOverrideAudio(trackId) {
+		if (trackId === null) {
+			this.#setDefaultTrack(1);
+		} else {
+			this.#overrideAudioTrack = +trackId;
+			this.#setAudioTrack(this.#overrideAudioTrack);
+		}
+	}
+	setOverrideSubtitle(trackId) {
+		if (trackId === null) {
+			this.#setDefaultTrack(2);
+		} else {
+			this.#overrideSubtitleTrack = +trackId;
+			this.#setSubtitleTrack(this.#overrideSubtitleTrack);
 		}
 	}
 };

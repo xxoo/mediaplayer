@@ -53,9 +53,6 @@ abstract class MediaplayerInterface {
   /// It is only reported by network media.
   final bufferRange = ValueNotifier(BufferRange.empty);
 
-  /// The video track that is overrided by the player.
-  final overrideVideo = ValueNotifier<String?>(null);
-
   /// The audio track that is overrided by the player.
   final overrideAudio = ValueNotifier<String?>(null);
 
@@ -69,10 +66,10 @@ abstract class MediaplayerInterface {
   final maxResolution = ValueNotifier(Size.zero);
 
   /// The preferred audio language of the player.
-  final preferredAudioLanguage = ValueNotifier<String>('');
+  final preferredAudioLanguage = ValueNotifier<String?>(null);
 
   /// The preferred subtitle language of the player.
-  final preferredSubtitleLanguage = ValueNotifier<String>('');
+  final preferredSubtitleLanguage = ValueNotifier<String?>(null);
 
   /// Whether to show subtitles.
   /// By default, the player does not show any subtitle. Regardless of the preferred subtitle language or override tracks.
@@ -117,7 +114,7 @@ abstract class MediaplayerInterface {
   /// Seek to a specific position.
   ///
   /// [position] is the position to seek to in milliseconds.
-  bool seekTo(int position);
+  bool seekTo(int position, {bool fast = false});
 
   /// Set the volume of the player.
   ///
@@ -143,20 +140,22 @@ abstract class MediaplayerInterface {
   /// This method may not work on windows/web.
   bool setMaxBitRate(int bitrate);
 
-  /// Set the preferred audio language of the player.
-  /// An empty string means using the system default.
-  bool setPreferredAudioLanguage(String language);
+  /// Set the preferred audio language of the player. Or use the system default.
+  bool setPreferredAudioLanguage(String? language);
 
-  /// Set the preferred subtitle language of the player.
-  /// An empty string means using the system default.
-  bool setPreferredSubtitleLanguage(String language);
+  /// Set the preferred subtitle language of the player. Or use the system default.
+  bool setPreferredSubtitleLanguage(String? language);
 
   /// Set whether to show subtitles.
   bool setShowSubtitle(bool show);
 
-  /// Force the player to override a track. Or cancel the override.
-  /// [trackId] should be a key of [MediaInfo.tracks].
-  bool overrideTrack(String trackId, bool enabled);
+  /// Force the player to select an audio track. Or cancel existing override.
+  /// [trackId] should be a key of [MediaInfo.audioTracks].
+  bool setOverrideAudio(String? trackId);
+
+  /// Force the player to select a subtitle track. Or cancel existing override.
+  /// [trackId] should be a key of [MediaInfo.subtitleTracks].
+  bool setOverrideSubtitle(String? trackId);
 
   /// Set whether the player should be fullscreen.
   /// This API only works on web.

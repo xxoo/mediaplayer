@@ -41,19 +41,17 @@ class _VideoListView extends State<VideoListView> with SetStateAsync {
 
   @override
   Widget build(BuildContext context) => InViewNotifierList(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 200),
-    isInViewPortCondition:
-        (double deltaTop, double deltaBottom, double viewPortDimension) =>
-            deltaTop < (0.5 * viewPortDimension) &&
-            deltaBottom > (0.5 * viewPortDimension),
-    builder:
-        (context, index) => InViewNotifierWidget(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 200),
+        isInViewPortCondition:
+            (double deltaTop, double deltaBottom, double viewPortDimension) =>
+                deltaTop < (0.5 * viewPortDimension) &&
+                deltaBottom > (0.5 * viewPortDimension),
+        builder: (context, index) => InViewNotifierWidget(
           id: '$index',
           child: Container(
-            margin:
-                index == _players.length - 1
-                    ? null
-                    : const EdgeInsets.only(bottom: 16),
+            margin: index == _players.length - 1
+                ? null
+                : const EdgeInsets.only(bottom: 16),
             child: AspectRatio(
               aspectRatio: 16 / 9,
               child: Stack(
@@ -86,6 +84,6 @@ class _VideoListView extends State<VideoListView> with SetStateAsync {
             return child!;
           },
         ),
-    itemCount: _players.length,
-  );
+        itemCount: _players.length,
+      );
 }

@@ -183,11 +183,13 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 		}
 	}
 
-	func seekTo(pos: CMTime) {
-		if avPlayer.currentItem == nil || !(avPlayer.currentItem!.duration.seconds > 0) || avPlayer.currentTime() == pos {
+	func seekTo(pos: CMTime, fast: Bool) {
+		if state == 1 {
+			position = pos
+		} else if avPlayer.currentItem == nil || !(avPlayer.currentItem!.duration.seconds > 0) || avPlayer.currentTime() == pos {
 			eventSink?(["event": "seekEnd"])
 		} else {
-			avPlayer.seek(to: pos, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+			seek(to: pos, fast: fast) { [weak self] finished in
 				if finished && self != nil {
 					self!.eventSink?(["event": "seekEnd"])
 					if self!.watcher == nil {
@@ -261,6 +263,14 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 			}
 		}
 	}
+	
+	private func seek(to: CMTime, fast: Bool, completion: @escaping (Bool) -> Void) {
+		if (fast) {
+			avPlayer.seek(to: to, completionHandler: completion)
+		} else {
+			avPlayer.seek(to: to, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: completion)
+		}
+	}
 
 	private func justPlay() {
 		if position == avPlayer.currentItem!.duration {
@@ -322,6 +332,55 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 				"event": "position",
 				"value": Int(position.seconds * 1000)
 			])
+		}
+	}
+	
+	private func loadEnd() {
+		Task { @MainActor in
+			if state == 1 && avPlayer.currentItem?.status == .readyToPlay {
+				var audioTracks = NSMutableDictionary()
+				var subtitleTracks = NSMutableDictionary()
+				if let characteristics = try? await avPlayer.currentItem!.asset.load(.availableMediaCharacteristicsWithMediaSelectionOptions) {
+					for characteristic in characteristics {
+						if let group = try? await avPlayer.currentItem!.asset.loadMediaSelectionGroup(for: characteristic) {
+							let i = mediaGroups.count
+							for j in 0..<group.options.count {
+								if group.options[j].isPlayable {
+									var tracks: NSMutableDictionary? = if group.options[j].mediaType == .audio {
+										audioTracks
+									} else if (group.options[j].mediaType == .subtitle || group.options[j].mediaType == .closedCaption) {
+										subtitleTracks
+									} else {
+										nil
+									}
+									if tracks != nil {
+										if mediaGroups.count == i {
+											mediaGroups.append(group)
+										}
+										tracks!["\(i).\(j)"] = [
+											"title": group.options[j].displayName,
+											"language": group.options[j].locale?.identifier ?? group.options[j].extendedLanguageTag
+										]
+									}
+								}
+							}
+						}
+					}
+				}
+				avPlayer.volume = volume
+				if avPlayer.currentItem!.duration.seconds <= 0 && speed != 1 {
+					speed = 1
+				}
+				state = 2
+				eventSink?([
+					"event": "mediaInfo",
+					"duration": avPlayer.currentItem!.duration.seconds > 0 ? Int(avPlayer.currentItem!.duration.seconds * 1000) : 0,
+					"audioTracks": audioTracks,
+					"subtitleTracks": subtitleTracks,
+					"source": source!
+				])
+				setPosition(time: avPlayer.currentTime())
+			}
 		}
 	}
 
@@ -408,46 +467,14 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 		case #keyPath(AVPlayer.currentItem.status):
 			switch avPlayer.currentItem?.status {
 			case .readyToPlay:
-				Task { @MainActor in
-					if state == 1 && avPlayer.currentItem?.status == .readyToPlay {
-						var tracks: [String: [String: String?]] = [:]
-						if let characteristics = try? await avPlayer.currentItem!.asset.load(.availableMediaCharacteristicsWithMediaSelectionOptions) {
-							for characteristic in characteristics {
-								if let group = try? await avPlayer.currentItem!.asset.loadMediaSelectionGroup(for: characteristic) {
-									let i = mediaGroups.count
-									mediaGroups.append(group)
-									for j in 0..<group.options.count {
-										if group.options[j].isPlayable {
-											let type = if group.options[j].mediaType == .audio {
-												"audio"
-											} else if (group.options[j].mediaType == .video) {
-												"video"
-											} else if (group.options[j].mediaType == .subtitle || group.options[j].mediaType == .closedCaption) {
-												"sub"
-											} else {
-												""
-											}
-											if type != "" {
-												let key = "\(i).\(j)"
-												tracks[key] = [
-													"type": type,
-													"title": group.options[j].displayName,
-													"language": group.options[j].locale?.identifier ?? group.options[j].extendedLanguageTag
-												]
-											}
-										}
-									}
-								}
-							}
+				if state == 1 {
+					if position == .zero {
+						loadEnd()
+					} else {
+						seek(to: position, fast: true) { [weak self] finished in
+							self?.loadEnd()
 						}
-						avPlayer.volume = volume
-						state = 2
-						eventSink?([
-							"event": "mediaInfo",
-							"duration": avPlayer.currentItem!.duration.seconds > 0 ? Int(avPlayer.currentItem!.duration.seconds * 1000) : 0,
-							"tracks": tracks,
-							"source": source!
-						])
+						position = .zero
 					}
 				}
 			case .failed:
@@ -505,7 +532,7 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 							bufferPosition = end
 							eventSink?([
 								"event": "buffer",
-								"begin": Int(currentTime.seconds * 1000),
+								"start": Int(currentTime.seconds * 1000),
 								"end": Int(bufferPosition.seconds * 1000)
 							])
 						}
@@ -575,7 +602,7 @@ public class MediaplayerPlugin: NSObject, FlutterPlugin {
 			players[call.arguments as! Int64]?.pause()
 		case "seekTo":
 			let args = call.arguments as! [String: Any]
-			players[args["id"] as! Int64]?.seekTo(pos: CMTime(seconds: args["value"] as! Double / 1000, preferredTimescale: 1000))
+			players[args["id"] as! Int64]?.seekTo(pos: CMTime(seconds: args["position"] as! Double / 1000, preferredTimescale: 1000), fast: args["fast"] as! Bool)
 		case "setVolume":
 			let args = call.arguments as! [String: Any]
 			players[args["id"] as! Int64]?.setVolume(vol: Float(args["value"] as! Double))

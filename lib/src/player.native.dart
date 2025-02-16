@@ -25,8 +25,8 @@ class Mediaplayer extends MediaplayerInterface {
 
   StreamSubscription? _eventSubscription;
   String? _source;
-  int? _position;
   var _seeking = false;
+  var _position = 0;
 
   /// All parameters are optional, and can be changed later by calling the corresponding methods.
   Mediaplayer({
@@ -70,17 +70,17 @@ class Mediaplayer extends MediaplayerInterface {
               playbackState.value = PlaybackState.paused;
               mediaInfo.value = MediaInfo(
                 e['duration'],
-                (e['tracks'] as Map).map(
-                  (k, v) => MapEntry(k as String, TrackInfo.fromMap(v as Map)),
-                ),
+                (e['audioTracks'] as Map).map((k, v) =>
+                    MapEntry(k as String, AudioInfo.fromMap(v as Map))),
+                (e['subtitleTracks'] as Map).map((k, v) =>
+                    MapEntry(k as String, SubtitleInfo.fromMap(v as Map))),
                 _source!,
               );
+              if (mediaInfo.value!.duration == 0) {
+                speed.value = 1;
+              }
               if (autoPlay.value) {
                 play();
-              }
-              if (_position != null) {
-                seekTo(_position!);
-                _position = null;
               }
             }
           } else if (e['event'] == 'videoSize') {
@@ -95,21 +95,19 @@ class Mediaplayer extends MediaplayerInterface {
             }
           } else if (e['event'] == 'position') {
             if (mediaInfo.value != null) {
-              position.value =
-                  e['value'] > mediaInfo.value!.duration
-                      ? mediaInfo.value!.duration
-                      : e['value'] < 0
+              position.value = e['value'] > mediaInfo.value!.duration
+                  ? mediaInfo.value!.duration
+                  : e['value'] < 0
                       ? 0
                       : e['value'];
             }
           } else if (e['event'] == 'buffer') {
             if (mediaInfo.value != null) {
-              final begin = e['begin'] as int;
+              final start = e['start'] as int;
               final end = e['end'] as int;
-              bufferRange.value =
-                  begin == 0 && end == 0
-                      ? BufferRange.empty
-                      : BufferRange(begin, end);
+              bufferRange.value = start == 0 && end == 0
+                  ? BufferRange.empty
+                  : BufferRange(start, end);
             }
           } else if (e['event'] == 'error') {
             // ignore errors when player is closed
@@ -142,7 +140,11 @@ class Mediaplayer extends MediaplayerInterface {
         });
         if (_source != null) {
           open(_source!);
+          if (_position > 0) {
+            seekTo(_position);
+          }
         }
+        _position = 0;
         if (volume.value != 1) {
           _setVolume();
         }
@@ -158,10 +160,10 @@ class Mediaplayer extends MediaplayerInterface {
         if (maxResolution.value != Size.zero) {
           _setMaxResolution();
         }
-        if (preferredAudioLanguage.value.isNotEmpty) {
+        if (preferredAudioLanguage.value != null) {
           _setPreferredAudioLanguage();
         }
-        if (preferredSubtitleLanguage.value.isNotEmpty) {
+        if (preferredSubtitleLanguage.value != null) {
           _setPreferredSubtitleLanguage();
         }
         if (showSubtitle.value) {
@@ -169,9 +171,11 @@ class Mediaplayer extends MediaplayerInterface {
         }
       }
     });
-    _position = initPosition;
     if (initSource != null) {
       open(initSource);
+      if (initPosition != null) {
+        seekTo(initPosition);
+      }
     }
     if (initVolume != null) {
       setVolume(initVolume);
@@ -222,7 +226,6 @@ class Mediaplayer extends MediaplayerInterface {
       autoPlay.dispose();
       finishedTimes.dispose();
       bufferRange.dispose();
-      overrideVideo.dispose();
       overrideAudio.dispose();
       overrideSubtitle.dispose();
       maxBitRate.dispose();
@@ -253,7 +256,10 @@ class Mediaplayer extends MediaplayerInterface {
       if (id != null) {
         error.value = null;
         _close();
-        _methodChannel.invokeMethod('open', {'id': id, 'value': source});
+        _methodChannel.invokeMethod('open', {
+          'id': id,
+          'value': source,
+        });
       }
       loading.value = true;
     }
@@ -297,11 +303,18 @@ class Mediaplayer extends MediaplayerInterface {
   }
 
   @override
-  bool seekTo(int position) {
-    if (!disposed && id != null) {
-      if (mediaInfo.value == null) {
-        if (loading.value) {
-          _position = position;
+  bool seekTo(int position, {bool fast = false}) {
+    if (!disposed) {
+      if (id == null) {
+        _position = position;
+        return true;
+      } else if (mediaInfo.value == null) {
+        if (loading.value && position > 30) {
+          _methodChannel.invokeMethod('seekTo', {
+            'id': id,
+            'position': position,
+            'fast': true,
+          });
           return true;
         }
       } else if (mediaInfo.value!.duration > 0) {
@@ -310,7 +323,11 @@ class Mediaplayer extends MediaplayerInterface {
         } else if (position > mediaInfo.value!.duration) {
           position = mediaInfo.value!.duration;
         }
-        _methodChannel.invokeMethod('seekTo', {'id': id, 'value': position});
+        _methodChannel.invokeMethod('seekTo', {
+          'id': id,
+          'position': position,
+          'fast': fast,
+        });
         loading.value = true;
         _seeking = true;
         return true;
@@ -336,7 +353,7 @@ class Mediaplayer extends MediaplayerInterface {
 
   @override
   bool setSpeed(double value) {
-    if (!disposed) {
+    if (!disposed && mediaInfo.value?.duration != 0) {
       if (value < 0.5) {
         value = 0.5;
       } else if (value > 2) {
@@ -401,7 +418,7 @@ class Mediaplayer extends MediaplayerInterface {
   }
 
   @override
-  bool setPreferredAudioLanguage(String value) {
+  bool setPreferredAudioLanguage(String? value) {
     if (!disposed && value != preferredAudioLanguage.value) {
       preferredAudioLanguage.value = value;
       if (id != null) {
@@ -413,7 +430,7 @@ class Mediaplayer extends MediaplayerInterface {
   }
 
   @override
-  bool setPreferredSubtitleLanguage(String value) {
+  bool setPreferredSubtitleLanguage(String? value) {
     if (!disposed && value != preferredSubtitleLanguage.value) {
       preferredSubtitleLanguage.value = value;
       if (id != null) {
@@ -437,30 +454,10 @@ class Mediaplayer extends MediaplayerInterface {
   }
 
   @override
-  bool overrideTrack(String trackId, bool enabled) {
-    if (!disposed &&
-        mediaInfo.value != null &&
-        mediaInfo.value!.tracks.containsKey(trackId)) {
-      final target =
-          mediaInfo.value!.tracks[trackId]!.type == TrackType.video
-              ? overrideVideo
-              : mediaInfo.value!.tracks[trackId]!.type == TrackType.audio
-              ? overrideAudio
-              : overrideSubtitle;
-      if (enabled != (target.value == trackId)) {
-        final ids = trackId.split('.');
-        _methodChannel.invokeMethod('overrideTrack', {
-          'id': id,
-          'groupId': int.parse(ids[0]),
-          'trackId': int.parse(ids[1]),
-          'value': enabled,
-        });
-        target.value = enabled ? trackId : null;
-        return true;
-      }
-    }
-    return false;
-  }
+  bool setOverrideAudio(String? trackId) => _overrideTrack(trackId, true);
+
+  @override
+  bool setOverrideSubtitle(String? trackId) => _overrideTrack(trackId, false);
 
   @override
   bool setFullscreen(bool value) => false;
@@ -468,52 +465,92 @@ class Mediaplayer extends MediaplayerInterface {
   @override
   bool setPictureInPicture(bool value) => false;
 
+  bool _overrideTrack(String? trackId, bool isAudio) {
+    if (!disposed && mediaInfo.value != null) {
+      final ValueNotifier<String?> overrided;
+      final Map<String, Object> tracks;
+      if (isAudio) {
+        tracks = mediaInfo.value!.audioTracks;
+        overrided = overrideAudio;
+      } else {
+        tracks = mediaInfo.value!.subtitleTracks;
+        overrided = overrideSubtitle;
+      }
+      if (overrided.value != trackId) {
+        bool enabled = trackId != null;
+        final String tid;
+        if (!enabled) {
+          tid = overrided.value!;
+        } else if (tracks.containsKey(trackId)) {
+          tid = trackId;
+        } else {
+          return false;
+        }
+        final ids = tid.split('.');
+        _methodChannel.invokeMethod('overrideTrack', {
+          'id': id,
+          'groupId': int.parse(ids[0]),
+          'trackId': int.parse(ids[1]),
+          'value': enabled,
+        });
+        overrided.value = trackId;
+        return true;
+      }
+    }
+    return false;
+  }
+
   void _setMaxResolution() => _methodChannel.invokeMethod('setMaxResolution', {
-    'id': id,
-    'width': maxResolution.value.width,
-    'height': maxResolution.value.height,
-  });
+        'id': id,
+        'width': maxResolution.value.width,
+        'height': maxResolution.value.height,
+      });
 
   void _setMaxBitRate() => _methodChannel.invokeMethod('setMaxBitRate', {
-    'id': id,
-    'value': maxBitRate.value,
-  });
+        'id': id,
+        'value': maxBitRate.value,
+      });
 
   void _setVolume() => _methodChannel.invokeMethod('setVolume', {
-    'id': id,
-    'value': volume.value,
-  });
+        'id': id,
+        'value': volume.value,
+      });
 
-  void _setSpeed() =>
-      _methodChannel.invokeMethod('setSpeed', {'id': id, 'value': speed.value});
+  void _setSpeed() => _methodChannel.invokeMethod('setSpeed', {
+        'id': id,
+        'value': speed.value,
+      });
 
   void _setLooping() => _methodChannel.invokeMethod('setLooping', {
-    'id': id,
-    'value': looping.value,
-  });
+        'id': id,
+        'value': looping.value,
+      });
 
-  void _setPreferredAudioLanguage() => _methodChannel.invokeMethod(
-    'setPreferredAudioLanguage',
-    {'id': id, 'value': preferredAudioLanguage.value},
-  );
+  void _setPreferredAudioLanguage() =>
+      _methodChannel.invokeMethod('setPreferredAudioLanguage', {
+        'id': id,
+        'value': preferredAudioLanguage.value ?? '',
+      });
 
-  void _setPreferredSubtitleLanguage() => _methodChannel.invokeMethod(
-    'setPreferredSubtitleLanguage',
-    {'id': id, 'value': preferredSubtitleLanguage.value},
-  );
+  void _setPreferredSubtitleLanguage() =>
+      _methodChannel.invokeMethod('setPreferredSubtitleLanguage', {
+        'id': id,
+        'value': preferredSubtitleLanguage.value ?? '',
+      });
 
   void _setShowSubtitle() => _methodChannel.invokeMethod('setShowSubtitle', {
-    'id': id,
-    'value': showSubtitle.value,
-  });
+        'id': id,
+        'value': showSubtitle.value,
+      });
 
   void _close() {
+    _seeking = false;
     mediaInfo.value = null;
     videoSize.value = Size.zero;
     position.value = 0;
     bufferRange.value = BufferRange.empty;
     finishedTimes.value = 0;
     playbackState.value = PlaybackState.closed;
-    overrideVideo.value = overrideAudio.value = overrideSubtitle.value = null;
+    overrideAudio.value = overrideSubtitle.value = null;
   }
 }

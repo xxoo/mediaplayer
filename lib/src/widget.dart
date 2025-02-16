@@ -94,12 +94,11 @@ class _AVMediaState extends State<MediaplayerView> with SetStateAsync {
     if (_player.fullscreen.value) {
       if (_overlayEntry == null) {
         _overlayEntry = OverlayEntry(
-          builder:
-              (context) => Container(
-                color: Colors.transparent,
-                width: double.infinity,
-                height: double.infinity,
-              ),
+          builder: (context) => Container(
+            color: Colors.transparent,
+            width: double.infinity,
+            height: double.infinity,
+          ),
         );
         Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
       }
@@ -206,5 +205,5 @@ class _AVMediaState extends State<MediaplayerView> with SetStateAsync {
 
   @override
   Widget build(BuildContext context) =>
-      makeVideo(_player, widget.backgroundColor, widget.videoFit);
+      makeWidget(_player, widget.backgroundColor, widget.videoFit);
 }

@@ -20,16 +20,17 @@ class _AppViewState extends State<AppView> {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    home: Scaffold(
-      appBar: AppBar(title: const Text('Mediaplayer advanced example')),
-      body: _buildBody(),
-      bottomNavigationBar: BottomNavigationBar(
-        items: AppRoute.values.map(_buildBottomNavigationBarItem).toList(),
-        currentIndex: _appRoute.index,
-        onTap: (index) => setState(() => _appRoute = AppRoute.values[index]),
-      ),
-    ),
-  );
+        home: Scaffold(
+          appBar: AppBar(title: const Text('Mediaplayer advanced example')),
+          body: _buildBody(),
+          bottomNavigationBar: BottomNavigationBar(
+            items: AppRoute.values.map(_buildBottomNavigationBarItem).toList(),
+            currentIndex: _appRoute.index,
+            onTap: (index) =>
+                setState(() => _appRoute = AppRoute.values[index]),
+          ),
+        ),
+      );
 
   Widget _buildBody() {
     switch (_appRoute) {
