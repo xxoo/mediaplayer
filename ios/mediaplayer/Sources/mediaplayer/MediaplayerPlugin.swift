@@ -348,7 +348,7 @@ class Mediaplayer: NSObject, FlutterStreamHandler {
 								if group.options[j].isPlayable {
 									var tracks: NSMutableDictionary? = if group.options[j].mediaType == .audio {
 										audioTracks
-									} else if (group.options[j].mediaType == .subtitle || group.options[j].mediaType == .closedCaption) {
+									} else if (group.options[j].mediaType == .subtitle || group.options[j].mediaType == .closedCaption || group.options[j].mediaType == .text) {
 										subtitleTracks
 									} else {
 										nil

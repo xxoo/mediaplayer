@@ -133,11 +133,11 @@ abstract class MediaplayerInterface {
   bool setAutoPlay(bool autoPlay);
 
   /// Set the maximum resolution of the player.
-  /// This method may not work on windows/web.
+  /// This method may not work on windows/safari.
   bool setMaxResolution(Size resolution);
 
   /// Set the maximum bit rate of the player.
-  /// This method may not work on windows/web.
+  /// This method may not work on windows/safari.
   bool setMaxBitRate(int bitrate);
 
   /// Set the preferred audio language of the player. Or use the system default.

@@ -1,4 +1,5 @@
 // This example shows how to handle subtitle and audio tracks.
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mediaplayer/index.dart';
@@ -15,8 +16,8 @@ class _TrackSelectorViewState extends State<TrackSelectorView>
     with SetStateAsync {
   final _player = Mediaplayer(
     initSource:
-        'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8',
-    initPosition: 300000,
+        'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8',
+    //initPosition: 300000,
     //initAutoPlay: true,
   );
   final _inputController = TextEditingController();

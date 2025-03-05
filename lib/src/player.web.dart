@@ -32,101 +32,107 @@ class Mediaplayer extends MediaplayerInterface {
     int? initMaxBitRate,
     Size? initMaxResolution,
   }) {
-    _plugin = MediaplayerPlugin.create((JSObject message) {
-      final e = message.dartify() as Map;
-      if (e['event'] == 'error') {
-        // ignore errors when player is closed
-        if (playbackState.value != PlaybackState.closed || loading.value) {
-          _source = null;
-          error.value = e['value'];
-          loading.value = false;
-          _close();
-        }
-      } else if (e['event'] == 'mediaInfo') {
-        if (_source != null && _translateSource(_source!) == e['source']) {
-          loading.value = false;
-          playbackState.value = PlaybackState.paused;
-          mediaInfo.value = MediaInfo(
-            (e['duration'] as double).toInt(),
-            (e['audioTracks'] as Map).map(
-                (k, v) => MapEntry(k as String, AudioInfo.fromMap(v as Map))),
-            (e['subtitleTracks'] as Map).map((k, v) =>
-                MapEntry(k as String, SubtitleInfo.fromMap(v as Map))),
-            _source!,
-          );
-          if (mediaInfo.value!.duration == 0) {
-            speed.value = 1;
-          }
-        }
-      } else if (e['event'] == 'videoSize') {
-        if (playbackState.value != PlaybackState.closed || loading.value) {
-          final width = e['width'] as double;
-          final height = e['height'] as double;
-          if (width != videoSize.value.width ||
-              height != videoSize.value.height) {
-            videoSize.value =
-                width > 0 && height > 0 ? Size(width, height) : Size.zero;
-          }
-        }
-      } else if (e['event'] == 'position') {
-        if (mediaInfo.value != null) {
-          final v = (e['value'] as double).toInt();
-          position.value = v > mediaInfo.value!.duration
-              ? mediaInfo.value!.duration
-              : v < 0
-                  ? 0
-                  : v;
-        }
-      } else if (e['event'] == 'buffer') {
-        if (mediaInfo.value != null) {
-          final start = (e['start'] as double).toInt();
-          final end = (e['end'] as double).toInt();
-          bufferRange.value = start == 0 && end == 0
-              ? BufferRange.empty
-              : BufferRange(start, end);
-        }
-      } else if (e['event'] == 'finished') {
-        if (mediaInfo.value != null) {
-          finishedTimes.value += 1;
-          loading.value = false;
-          if (mediaInfo.value!.duration == 0) {
+    _plugin = MediaplayerPlugin.create(
+      (JSObject message) {
+        final e = message.dartify() as Map;
+        if (e['event'] == 'error') {
+          // ignore errors when player is closed
+          if (playbackState.value != PlaybackState.closed || loading.value) {
+            _source = null;
+            error.value = e['value'];
+            loading.value = false;
             _close();
-          } else if (!looping.value) {
-            playbackState.value = PlaybackState.paused;
           }
+        } else if (e['event'] == 'mediaInfo') {
+          if (_source != null && _translateSource(_source!) == e['source']) {
+            loading.value = false;
+            playbackState.value = PlaybackState.paused;
+            mediaInfo.value = MediaInfo(
+              (e['duration'] as double).toInt(),
+              (e['audioTracks'] as Map).map(
+                (k, v) => MapEntry(k as String, AudioInfo.fromMap(v as Map)),
+              ),
+              (e['subtitleTracks'] as Map).map(
+                (k, v) => MapEntry(k as String, SubtitleInfo.fromMap(v as Map)),
+              ),
+              _source!,
+            );
+            if (mediaInfo.value!.duration == 0) {
+              speed.value = 1;
+            }
+          }
+        } else if (e['event'] == 'videoSize') {
+          if (playbackState.value != PlaybackState.closed || loading.value) {
+            final width = e['width'] as double;
+            final height = e['height'] as double;
+            if (width != videoSize.value.width ||
+                height != videoSize.value.height) {
+              videoSize.value =
+                  width > 0 && height > 0 ? Size(width, height) : Size.zero;
+            }
+          }
+        } else if (e['event'] == 'position') {
+          if (mediaInfo.value != null) {
+            final v = (e['value'] as double).toInt();
+            position.value =
+                v > mediaInfo.value!.duration
+                    ? mediaInfo.value!.duration
+                    : v < 0
+                    ? 0
+                    : v;
+          }
+        } else if (e['event'] == 'buffer') {
+          if (mediaInfo.value != null) {
+            final start = (e['start'] as double).toInt();
+            final end = (e['end'] as double).toInt();
+            bufferRange.value =
+                start == 0 && end == 0
+                    ? BufferRange.empty
+                    : BufferRange(start, end);
+          }
+        } else if (e['event'] == 'finished') {
+          if (mediaInfo.value != null) {
+            finishedTimes.value += 1;
+            loading.value = false;
+            if (mediaInfo.value!.duration == 0) {
+              _close();
+            } else if (!looping.value) {
+              playbackState.value = PlaybackState.paused;
+            }
+          }
+        } else if (e['event'] == 'playing') {
+          if (mediaInfo.value != null) {
+            loading.value = _seeking = _loading = false;
+            playbackState.value =
+                e['value'] ? PlaybackState.playing : PlaybackState.paused;
+          }
+        } else if (e['event'] == 'loading') {
+          if (mediaInfo.value != null) {
+            _loading = e['value'];
+            loading.value = _loading || _seeking;
+          }
+        } else if (e['event'] == 'seeking') {
+          if (mediaInfo.value != null) {
+            _seeking = e['value'];
+            loading.value = _loading || _seeking;
+          }
+        } else if (e['event'] == 'speed') {
+          speed.value = e['value'];
+        } else if (e['event'] == 'volume') {
+          volume.value = e['value'];
+        } else if (e['event'] == 'fullscreen') {
+          fullscreen.value = e['value'];
+        } else if (e['event'] == 'pictureInPicture') {
+          pictureInPicture.value = e['value'];
+        } else if (e['event'] == 'showSubtitle') {
+          showSubtitle.value = e['value'];
+        } else if (e['event'] == 'overrideAudio') {
+          _overrideTrack(e['id'], true);
+        } else if (e['event'] == 'overrideSubtitle') {
+          _overrideTrack(e['id'], false);
         }
-      } else if (e['event'] == 'playing') {
-        if (mediaInfo.value != null) {
-          loading.value = _seeking = _loading = false;
-          playbackState.value =
-              e['value'] ? PlaybackState.playing : PlaybackState.paused;
-        }
-      } else if (e['event'] == 'loading') {
-        if (mediaInfo.value != null) {
-          _loading = e['value'];
-          loading.value = _loading || _seeking;
-        }
-      } else if (e['event'] == 'seeking') {
-        if (mediaInfo.value != null) {
-          _seeking = e['value'];
-          loading.value = _loading || _seeking;
-        }
-      } else if (e['event'] == 'speed') {
-        speed.value = e['value'];
-      } else if (e['event'] == 'volume') {
-        volume.value = e['value'];
-      } else if (e['event'] == 'fullscreen') {
-        fullscreen.value = e['value'];
-      } else if (e['event'] == 'pictureInPicture') {
-        pictureInPicture.value = e['value'];
-      } else if (e['event'] == 'showSubtitle') {
-        showSubtitle.value = e['value'];
-      } else if (e['event'] == 'overrideAudio') {
-        _overrideTrack(e['id'], true);
-      } else if (e['event'] == 'overrideSubtitle') {
-        _overrideTrack(e['id'], false);
-      }
-    }.toJS);
+      }.toJS,
+    );
     if (initSource != null) {
       open(initSource);
       if (initPosition != null) {

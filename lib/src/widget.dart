@@ -81,10 +81,10 @@ class MediaplayerView extends StatefulWidget {
   });
 
   @override
-  State<MediaplayerView> createState() => _AVMediaState();
+  State<MediaplayerView> createState() => _MediaplayerState();
 }
 
-class _AVMediaState extends State<MediaplayerView> with SetStateAsync {
+class _MediaplayerState extends State<MediaplayerView> with SetStateAsync {
   late final Mediaplayer _player;
   bool _foreignPlayer = false;
   // This is a workaround for the fullscreen issue on web.
@@ -94,11 +94,12 @@ class _AVMediaState extends State<MediaplayerView> with SetStateAsync {
     if (_player.fullscreen.value) {
       if (_overlayEntry == null) {
         _overlayEntry = OverlayEntry(
-          builder: (context) => Container(
-            color: Colors.transparent,
-            width: double.infinity,
-            height: double.infinity,
-          ),
+          builder:
+              (context) => Container(
+                color: Colors.transparent,
+                width: double.infinity,
+                height: double.infinity,
+              ),
         );
         Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
       }

@@ -28,11 +28,7 @@ class SubtitleInfo {
   final String? format;
   final String? language;
   final String? title;
-  const SubtitleInfo({
-    this.format,
-    this.language,
-    this.title,
-  });
+  const SubtitleInfo({this.format, this.language, this.title});
 }
 
 /// This type is used by [MediaInfo.audioTracks].

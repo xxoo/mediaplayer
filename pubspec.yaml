@@ -1,18 +1,18 @@
 name: mediaplayer
-description: "A lightweight media player with subtitle rendering and track selection support, leveraging system or app-level components for seamless playback."
-version: 1.2.1
+description: "A lightweight media player with subtitle rendering and audio track switching support, leveraging system or app-level components for seamless playback."
+version: 1.3.0
 repository: "https://github.com/xxoo/mediaplayer"
 issue_tracker: "https://github.com/xxoo/mediaplayer/issues"
 topics:
-  - audio
-  - video
-  - media
-  - player
+  - media-player
+  - audio-player
+  - video-player
+  - subtitle
   - hls
 
 environment:
-  sdk: ">=3.3.0"
-  flutter: ">=3.28.0"
+  sdk: ">=3.7.0"
+  flutter: ">=3.29.0"
 
 dependencies:
   flutter:

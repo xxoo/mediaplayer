@@ -1,5 +1,7 @@
 #include "include/mediaplayer/mediaplayer_plugin.h"
+
 #include <flutter_linux/flutter_linux.h>
+#include <ctype.h>
 #include <locale.h>
 #include <gdk/gdkx.h>
 #include <gdk/gdkwayland.h>
@@ -10,7 +12,7 @@
 #include <unicode/uloc.h>
 
 /* player class */
-#define MEDIAPLAYER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), mediaplayer_get_type(), Mediaplayer))
+
 typedef struct {
 	FlTextureGL parent_instance;
 	mpv_opengl_fbo fbo;
@@ -24,27 +26,33 @@ typedef struct {
 	int64_t bufferPosition;
 	double speed;
 	double volume;
-	GArray* videoTracks; // video tracks with id, width, height
+	gchar* preferredAudioLanguage;
+	gchar* preferredSubtitleLanguage;
+	GArray* videoTracks; // video tracks with id, width, height, bitrate
+	GArray* audioTracks; // audio tracks with id, language
+	GArray* subtitleTracks; // subtitle tracks with id, language
 	GLuint texture;
 	GLsizei width;
 	GLsizei height;
-	uint16_t overrideVideo; // 0 for auto otherwise track id
-	uint16_t overrideAudio;
-	uint16_t overrideSubtitle;
-	uint16_t maxWidth; // 0 for auto
+	uint32_t maxBitRate; // 0 for auto
+	uint16_t maxWidth;
 	uint16_t maxHeight;
+	uint16_t overrideAudio; // 0 for auto otherwise track id
+	uint16_t overrideSubtitle;
 	bool looping;
 	bool streaming;
 	bool networking;
+	bool seeking;
 	uint8_t state; // 0: idle, 1: opening, 2: paused, 3: playing
 } Mediaplayer;
+#define MEDIAPLAYER(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), mediaplayer_get_type(), Mediaplayer))
 typedef struct {
 	FlTextureGLClass parent_class;
 } MediaplayerClass;
 G_DEFINE_TYPE(Mediaplayer, mediaplayer, fl_texture_gl_get_type())
 
 /* plugin class */
-#define MEDIAPLAYER_PLUGIN(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), mediaplayer_plugin_get_type(), MediaplayerPlugin))
+
 typedef struct {
 	GObject parent_instance;
 	FlMethodCodec* codec;
@@ -54,6 +62,7 @@ typedef struct {
 	GTree* players; // all write operations on the tree are done in the main thread
 	GMutex mutex;   // so we just need to lock the mutex when reading in other threads
 } MediaplayerPlugin;
+#define MEDIAPLAYER_PLUGIN(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), mediaplayer_plugin_get_type(), MediaplayerPlugin))
 typedef struct {
 	GObjectClass parent_class;
 } MediaplayerPluginClass;
@@ -61,43 +70,298 @@ G_DEFINE_TYPE(MediaplayerPlugin, mediaplayer_plugin, g_object_get_type())
 
 static MediaplayerPlugin* plugin;
 
-static gint compare_key(gconstpointer a, gconstpointer b) {
-	int64_t i = (int64_t)a;
-	int64_t j = (int64_t)b;
-	if (i > j) {
-		return 1;
-	} else if (i < j) {
-		return -1;
-	} else {
-		return 0;
-	}
-}
-
-static gboolean release_object_on_tree(gpointer key, gpointer value, gpointer obj) {
-	g_object_unref(value);
-	return FALSE;
-}
-
 /* player implementation */
-static gboolean mediaplayer_is_eof(Mediaplayer* self) {
+
+typedef struct {
+	uint16_t id;
+	uint16_t width;
+	uint16_t height;
+	uint32_t bitrate;
+} MediaplayerVideoTrack;
+
+typedef struct {
+	uint16_t id;
+	uint8_t size;
+	bool def;
+	gchar* language[3];
+} MediaplayerTrack;
+
+static void mediaplayer_track_free(void* item) {
+	const MediaplayerTrack* track = item;
+	g_free(track->language[0]);
+}
+
+static gboolean mediaplayer_is_eof(const Mediaplayer* self) {
 	gboolean eof;
 	mpv_get_property(self->mpv, "eof-reached", MPV_FORMAT_FLAG, &eof);
 	return eof;
 }
 
-static int64_t mediaplayer_get_pos(Mediaplayer* self) {
+static int64_t mediaplayer_get_pos(const Mediaplayer* self) {
 	double pos;
 	mpv_get_property(self->mpv, "time-pos/full", MPV_FORMAT_DOUBLE, &pos);
 	return (int64_t)(pos * 1000);
 }
 
-static void mediaplayer_set_pause(Mediaplayer* self, gboolean pause) {
+static void mediaplayer_set_pause(const Mediaplayer* self, gboolean pause) {
 	mpv_set_property(self->mpv, "pause", MPV_FORMAT_FLAG, &pause);
 }
 
-static void mediaplayer_rewind(Mediaplayer* self) {
-	const gchar* cmd[] = { "seek", "0.1", "absolute+keyframes", NULL }; //use 0.1 instead of 0 to workaround mpv bug
+static void mediaplayer_just_seek_to(Mediaplayer* self, const int64_t position, const bool fast, const bool setstate) {
+	gchar* t = g_strdup_printf("%lf", (double)position / 1000);
+	const gchar* cmd[] = { "seek", t, fast ? "absolute+keyframes" : "absolute", NULL };
 	mpv_command(self->mpv, cmd);
+	g_free(t);
+	if (setstate) {
+		self->seeking = true;
+	}
+}
+
+static uint8_t mediaplayer_split_lang(const gchar* lang, gchar* result[3]) {
+	uint8_t count = 0;
+	uint16_t start = 0;
+	uint16_t pos1 = 0;
+	uint16_t pos2 = 0;
+	while (lang[pos1] == '_' || lang[pos1] == '-' || lang[pos1] == '.') {
+		pos1++;
+	}
+	gchar* str = g_malloc(strlen(lang) - pos1 + 1);
+	while (count < 3) {
+		const bool end = !lang[pos1] || lang[pos1] == '.';
+		if (end || lang[pos1] == '_' || lang[pos1] == '-') {
+			str[pos2] = 0;
+			if (pos2 > start) {
+				result[count++] = &str[start];
+				start = pos2 + 1;
+			}
+			if (end) {
+				break;
+			}
+		} else {
+			str[pos2] = tolower(lang[pos1]);
+		}
+		pos1++;
+		pos2++;
+	}
+	return count;
+}
+
+static uint16_t mediaplayer_match_lang(const GArray* lang) {
+	uint8_t count = 3;
+	uint16_t j = 0;
+	for (guint i = 0; i < lang->len; i++) {
+		const MediaplayerTrack* t = g_array_index(lang, MediaplayerTrack*, i);
+		if (t->size < count || (t->size == count && t->def)) {
+			j = t->id;
+			count = t->size;
+		}
+	}
+	return j;
+}
+
+static uint16_t mediaplayer_find_lang(const GArray* lang1, const GArray* lang2) {
+	uint16_t i = mediaplayer_match_lang(lang2);
+	if (i == 0) {
+		i = mediaplayer_match_lang(lang1);
+	}
+	return i;
+}
+
+static void mediaplayer_set_default_track(const Mediaplayer* self, const uint8_t type) {
+	if (self->state > 1) {
+		gchar* language = type ? self->preferredSubtitleLanguage : self->preferredAudioLanguage;
+		if (!language) {
+			language = setlocale(LC_CTYPE, NULL);
+		}
+		const GArray* tracks = type ? self->subtitleTracks : self->audioTracks;
+		MediaplayerTrack t = { 0 };
+		t.size = mediaplayer_split_lang(language, t.language);
+		GArray* lang1 = g_array_new(FALSE, FALSE, sizeof(MediaplayerTrack*));
+		GArray* lang2 = g_array_new(FALSE, FALSE, sizeof(MediaplayerTrack*));
+		uint16_t def = 0;
+		for (guint i = 0; i < tracks->len; i++) {
+			MediaplayerTrack* track = &g_array_index(tracks, MediaplayerTrack, i);
+			if (!def || track->def) {
+				def = track->id;
+			}
+			if (g_strcmp0(t.language[0], track->language[0]) == 0) {
+				g_array_append_val(lang1, track);
+				if (t.size > 1 && track->size > 1 && g_strcmp0(t.language[1], track->language[1]) == 0) {
+					g_array_append_val(lang2, track);
+					if (t.size > 2 && track->size > 2 && g_strcmp0(t.language[2], track->language[2]) == 0) {
+						t.id = track->id;
+						break;
+					}
+				}
+			}
+		}
+		if (!t.id) {
+			t.id = mediaplayer_find_lang(lang1, lang2);
+			if (!t.id && def) {
+				t.id = def;
+			}
+		}
+		mediaplayer_track_free(&t);
+		g_array_free(lang1, TRUE);
+		g_array_free(lang2, TRUE);
+		gchar* p = g_strdup_printf("%d", t.id);
+		mpv_set_property_string(self->mpv, type ? "sid" : "aid", p);
+		g_free(p);
+	}
+}
+
+static void mediaplayer_set_max_size(const Mediaplayer* self) {
+	if (self->maxWidth > 0 || self->maxHeight > 0) {
+		uint16_t id = 0;
+		uint16_t maxWidth = 0;
+		uint16_t maxHeight = 0;
+		uint16_t minWidth = UINT16_MAX;
+		uint16_t minHeight = UINT16_MAX;
+		uint32_t maxBitrate = 0;
+		uint32_t minBitrate = UINT32_MAX;
+		uint16_t minId = 0;
+		for (uint i = 0; i < self->videoTracks->len; i++) {
+			const MediaplayerVideoTrack* data = &g_array_index(self->videoTracks, MediaplayerVideoTrack, i);
+			if ((self->maxWidth == 0 || data->width <= self->maxWidth) && (self->maxHeight == 0 || data->height <= self->maxHeight) && (self->maxBitRate == 0 || data->bitrate <= self->maxBitRate) && data->width > maxWidth && data->height > maxHeight && data->bitrate > maxBitrate) {
+				id = data->id;
+				maxWidth = data->width;
+				maxHeight = data->height;
+				maxBitrate = data->bitrate;
+			}
+			if (id == 0 && data->width < minWidth && data->height < minHeight && data->bitrate < minBitrate) {
+				minId = data->id;
+				minWidth = data->width;
+				minHeight = data->height;
+				minBitrate = data->bitrate;
+			}
+		}
+		if (id == 0) {
+			id = minId;
+		}
+		if (id != 0) {
+			gchar* p = g_strdup_printf("%d", id);
+			mpv_set_property_string(self->mpv, "vid", p);
+			g_free(p);
+		}
+	} else {
+		mpv_set_property_string(self->mpv, "vid", "auto");
+	}
+}
+
+static void mediaplayer_send_time(const Mediaplayer* self) {
+	g_autoptr(FlValue) evt = fl_value_new_map();
+	fl_value_set_string_take(evt, "event", fl_value_new_string("position"));
+	fl_value_set_string_take(evt, "value", fl_value_new_int(self->position));
+	fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
+}
+
+static void mediaplayer_loaded(Mediaplayer* self) {
+	int64_t count;
+	mpv_get_property(self->mpv, "track-list/count", MPV_FORMAT_INT64, &count);
+	FlValue* audioTracks = fl_value_new_map();
+	FlValue* subtitleTracks = fl_value_new_map();
+	for (uint i = 0; i < count; i++) {
+		gchar* str;
+		gchar p[33];
+		sprintf(p, "track-list/%d/type", i);
+		mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str);
+		const uint8_t type = g_str_equal(str, "video") ? 2 : g_str_equal(str, "audio") ? 0 : 1;
+		mpv_free(str);
+		int64_t trackId;
+		sprintf(p, "track-list/%d/id", i);
+		mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &trackId);
+		int64_t size;
+		if (type == 2) {
+			MediaplayerVideoTrack data = { .id = (uint16_t)trackId };
+			sprintf(p, "track-list/%d/demux-w", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+				data.width = (uint16_t)size;
+			}
+			sprintf(p, "track-list/%d/demux-h", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+				data.height = (uint16_t)size;
+			}
+			sprintf(p, "track-list/%d/hls-bitrate", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+				data.bitrate = (uint32_t)size;
+			}
+			g_array_append_val(self->videoTracks, data);
+		} else {
+			MediaplayerTrack t = { .id = (uint16_t)trackId };
+			sprintf(p, "track-list/%d/default", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
+				t.def = g_str_equal(str, "yes");
+				mpv_free(str);
+			}
+			FlValue* info = fl_value_new_map();
+			sprintf(p, "track-list/%d/lang", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
+				UErrorCode status = U_ZERO_ERROR;
+				char langtag[ULOC_FULLNAME_CAPACITY];
+				uloc_toLanguageTag(str, langtag, ULOC_FULLNAME_CAPACITY, FALSE, &status); // we don't want ISO 639-2 codes
+				const gchar* lang = U_FAILURE(status) ? str : langtag;
+				fl_value_set_string_take(info, "language", fl_value_new_string(lang));
+				t.size = mediaplayer_split_lang(lang, t.language);
+				mpv_free(str);
+			}
+			g_array_append_val(type ? self->subtitleTracks : self->audioTracks, t);
+			sprintf(p, "track-list/%d/title", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
+				fl_value_set_string_take(info, "label", fl_value_new_string(str));
+				mpv_free(str);
+			}
+			sprintf(p, "track-list/%d/codec", i);
+			if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
+				fl_value_set_string_take(info, "format", fl_value_new_string(str));
+				mpv_free(str);
+			} else {
+				sprintf(p, "track-list/%d/format-name", i);
+				if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
+					fl_value_set_string_take(info, "format", fl_value_new_string(str));
+					mpv_free(str);
+				}
+			}
+			if (type) {
+				sprintf(p, "%d.%ld", type, trackId);
+				fl_value_set_string_take(subtitleTracks, p, info);
+			} else {
+				sprintf(p, "track-list/%d/demux-bitrate", i);
+				if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+					fl_value_set_string_take(info, "bitrate", fl_value_new_int(size));
+				}
+				sprintf(p, "track-list/%d/demux-channel-count", i);
+				if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+					fl_value_set_string_take(info, "channels", fl_value_new_int(size));
+				}
+				sprintf(p, "track-list/%d/demux-samplerate", i);
+				if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
+					fl_value_set_string_take(info, "sampleRate", fl_value_new_int(size));
+				}
+				sprintf(p, "%d.%ld", type, trackId);
+				fl_value_set_string_take(audioTracks, p, info);
+			}
+		}
+	}
+	double duration;
+	gboolean networking;
+	mpv_get_property(self->mpv, "duration/full", MPV_FORMAT_DOUBLE, &duration);
+	mpv_get_property(self->mpv, "demuxer-via-network", MPV_FORMAT_FLAG, &networking);
+	mpv_set_property(self->mpv, "volume", MPV_FORMAT_DOUBLE, &self->volume);
+	self->state = 2;
+	self->networking = networking == TRUE;
+	mediaplayer_set_max_size(self);
+	mediaplayer_set_default_track(self, 0);
+	mediaplayer_set_default_track(self, 1);
+	g_autoptr(FlValue) evt = fl_value_new_map();
+	fl_value_set_string_take(evt, "event", fl_value_new_string("mediaInfo"));
+	fl_value_set_string_take(evt, "source", fl_value_new_string(self->source));
+	fl_value_set_string_take(evt, "duration", fl_value_new_int((int64_t)(duration * 1000)));
+	fl_value_set_string_take(evt, "audioTracks", audioTracks);
+	fl_value_set_string_take(evt, "subtitleTracks", subtitleTracks);
+	fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
+	if (self->position > 0) {
+		mediaplayer_send_time(self);
+	}
 }
 
 static void mediaplayer_close(Mediaplayer* self) {
@@ -106,7 +370,6 @@ static void mediaplayer_close(Mediaplayer* self) {
 	self->height = 0;
 	self->position = 0;
 	self->bufferPosition = 0;
-	self->overrideVideo = 0;
 	self->overrideAudio = 0;
 	self->overrideSubtitle = 0;
 	if (self->source) {
@@ -114,6 +377,8 @@ static void mediaplayer_close(Mediaplayer* self) {
 		self->source = NULL;
 	}
 	g_array_set_size(self->videoTracks, 0);
+	g_array_set_size(self->audioTracks, 0);
+	g_array_set_size(self->subtitleTracks, 0);
 	const gchar* stop[] = { "stop", NULL };
 	mpv_command(self->mpv, stop);
 	const gchar* clear[] = { "playlist-clear", NULL };
@@ -149,7 +414,7 @@ static void mediaplayer_play(Mediaplayer* self) {
 	if (self->state == 2) {
 		self->state = 3;
 		if (mediaplayer_is_eof(self)) {
-			mediaplayer_rewind(self);
+			mediaplayer_just_seek_to(self, 100, true, false);
 		}
 		mediaplayer_set_pause(self, FALSE);
 	}
@@ -162,16 +427,15 @@ static void mediaplayer_pause(Mediaplayer* self) {
 	}
 }
 
-static void mediaplayer_seek_to(Mediaplayer* self, const int64_t position) {
-	if (self->state < 2 || self->streaming || mediaplayer_get_pos(self) == position) {
+static void mediaplayer_seek_to(Mediaplayer* self, const int64_t position, const bool fast) {
+	if (self->streaming || mediaplayer_get_pos(self) == position) {
 		g_autoptr(FlValue) evt = fl_value_new_map();
 		fl_value_set_string_take(evt, "event", fl_value_new_string("seekEnd"));
 		fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
 	} else if (self->state > 1) {
-		gchar* t = g_strdup_printf("%lf", (double)position / 1000);
-		const gchar* cmd[] = { "seek", t, "absolute", NULL };
-		mpv_command(self->mpv, cmd);
-		g_free(t);
+		mediaplayer_just_seek_to(self, position, fast, true);
+	} else if (self->state == 1) {
+		self->position = position;
 	}
 }
 
@@ -189,51 +453,26 @@ static void mediaplayer_set_looping(Mediaplayer* self, const bool looping) {
 	self->looping = looping;
 }
 
-static void mediaplayer_set_show_subtitle(Mediaplayer* self, const bool show) {
+static void mediaplayer_set_show_subtitle(const Mediaplayer* self, const bool show) {
 	mpv_set_property_string(self->mpv, "sub-visibility", show ? "yes" : "no");
 }
 
 static void mediaplayer_set_preferred_audio_language(Mediaplayer* self, const gchar* language) {
-	mpv_set_property_string(self->mpv, "alang", language);
+	if (g_strcmp0(self->preferredAudioLanguage, language)) {
+		g_free(self->preferredAudioLanguage);
+		self->preferredAudioLanguage = g_strdup(language);
+		if (self->state > 1 && !self->overrideAudio) {
+			mediaplayer_set_default_track(self, 0);
+		}
+	}
 }
 
 static void mediaplayer_set_preferred_subtitle_language(Mediaplayer* self, const gchar* language) {
-	mpv_set_property_string(self->mpv, "slang", language);
-}
-
-static void mediaplayer_set_max_bitrate(Mediaplayer* self, uint32_t bitrate) {
-	mpv_set_property(self->mpv, "hls-bitrate", MPV_FORMAT_INT64, &bitrate);
-}
-
-static void mediaplayer_set_max_resolution_real(Mediaplayer* self) {
-	if (self->overrideVideo == 0) {
-		if (self->maxWidth > 0 || self->maxHeight > 0) {
-			uint16_t id = 0;
-			uint32_t maxRes = 0;
-			uint16_t minId = 0;
-			uint32_t minRes = UINT32_MAX;
-			for (uint i = 0; i < self->videoTracks->len; i++) {
-				uint16_t* data = &g_array_index(self->videoTracks, uint16_t, i * 3);
-				uint32_t res = data[1] * data[2];
-				if ((self->maxWidth == 0 || data[1] <= self->maxWidth) && (self->maxHeight == 0 || data[2] <= self->maxHeight) && res > maxRes) {
-					id = data[0];
-					maxRes = res;
-				}
-				if (id == 0 && res < minRes) {
-					minId = data[0];
-					minRes = res;
-				}
-			}
-			if (id == 0) {
-				id = minId;
-			}
-			if (id != 0) {
-				char p[8];
-				sprintf(p, "%d", id);
-				mpv_set_property_string(self->mpv, "vid", p);
-			}
-		} else {
-			mpv_set_property_string(self->mpv, "vid", "auto");
+	if (g_strcmp0(self->preferredSubtitleLanguage, language)) {
+		g_free(self->preferredSubtitleLanguage);
+		self->preferredSubtitleLanguage = g_strdup(language);
+		if (self->state > 1 && !self->overrideSubtitle) {
+			mediaplayer_set_default_track(self, 1);
 		}
 	}
 }
@@ -242,62 +481,63 @@ static void mediaplayer_set_max_resolution(Mediaplayer* self, const uint16_t wid
 	self->maxWidth = width;
 	self->maxHeight = height;
 	if (self->state > 1) {
-		mediaplayer_set_max_resolution_real(self);
+		mediaplayer_set_max_size(self);
 	}
 }
 
-static void mediaplayer_overrideTrack(Mediaplayer* self, const uint8_t typeId, uint16_t trackId, bool enabled) {
+static void mediaplayer_set_max_bitrate(Mediaplayer* self, uint32_t bitrate) {
+	self->maxBitRate = bitrate;
 	if (self->state > 1) {
-		char p[8];
+		mediaplayer_set_max_size(self);
+	}
+}
+
+static void mediaplayer_overrideTrack(Mediaplayer* self, const uint8_t typeId, uint16_t trackId, const bool enabled) {
+	if (self->state > 1) {
+		gchar* p;
 		if (enabled) {
-			sprintf(p, "%d", trackId);
+			p = g_strdup_printf("%d", trackId);
 		} else {
-			sprintf(p, "auto");
+			p = g_strdup("auto");
 			trackId = 0;
 		}
-		if (typeId == 0) {
-			self->overrideVideo = trackId;
-			mpv_set_property_string(self->mpv, "vid", p);
-		} else if (typeId == 1) {
-			self->overrideAudio = trackId;
-			mpv_set_property_string(self->mpv, "aid", p);
-		} else if (typeId == 2) {
+		if (typeId) {
 			self->overrideSubtitle = trackId;
-			mpv_set_property_string(self->mpv, "sid", p);
+		} else {
+			self->overrideAudio = trackId;
 		}
+		if (trackId) {
+			mpv_set_property_string(self->mpv, typeId ? "sid" : "aid", p);
+		} else {
+			mediaplayer_set_default_track(self, typeId);
+		}
+		g_free(p);
 	}
 }
 
-static void* gl_init(void* data, const char* name) {
-	size_t type = (size_t)data; //2: wayland, 1: x11
-	if (type == 2) {
-		return eglGetProcAddress(name);
-	} else if (type == 1) {
-		return glXGetProcAddressARB((const GLubyte*)name);
-	} else {
-		return NULL;
-	}
+static void* mediaplayer_gl_init(void* addrCtx, const char* name) {
+	void* (*func)(const char*) = addrCtx;
+	return func ? func(name) : NULL;
 }
 
-static gboolean event_callback(void* id) {
+static gboolean mediaplayer_event_callback(void* id) {
 	Mediaplayer* self = g_tree_lookup(plugin->players, id);
 	while (self) {
-		mpv_event* event = mpv_wait_event(self->mpv, 0);
+		const mpv_event* event = mpv_wait_event(self->mpv, 0);
 		if (event->event_id == MPV_EVENT_NONE) {
 			break;
 		} else if (self->state > 0) {
 			if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-				mpv_event_property* detail = (mpv_event_property*)event->data;
+				const mpv_event_property* detail = (mpv_event_property*)event->data;
 				if (detail->data) {
 					if (g_str_equal(detail->name, "time-pos/full")) {
-						if (self->state > 1 && !self->streaming) {
-							int64_t pos = (int64_t)(*(double*)detail->data * 1000);
+						if ((self->state > 1 || (self->state == 1 && self->seeking)) && !self->streaming) {
+							const int64_t pos = (int64_t)(*(double*)detail->data * 1000);
 							if (self->position != pos) {
 								self->position = pos;
-								g_autoptr(FlValue) evt = fl_value_new_map();
-								fl_value_set_string_take(evt, "event", fl_value_new_string("position"));
-								fl_value_set_string_take(evt, "value", fl_value_new_int(self->position));
-								fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
+								if (self->state > 1) {
+									mediaplayer_send_time(self);
+								}
 							}
 						}
 					} else if (g_str_equal(detail->name, "demuxer-cache-time")) {
@@ -305,7 +545,7 @@ static gboolean event_callback(void* id) {
 							self->bufferPosition = (int64_t)(*(double*)detail->data * 1000);
 							g_autoptr(FlValue) evt = fl_value_new_map();
 							fl_value_set_string_take(evt, "event", fl_value_new_string("buffer"));
-							fl_value_set_string_take(evt, "begin", fl_value_new_int(mediaplayer_get_pos(self)));
+							fl_value_set_string_take(evt, "start", fl_value_new_int(mediaplayer_get_pos(self)));
 							fl_value_set_string_take(evt, "end", fl_value_new_int(self->bufferPosition));
 							fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
 						}
@@ -321,7 +561,7 @@ static gboolean event_callback(void* id) {
 							if (self->streaming) {
 								mediaplayer_close(self);
 							} else if (self->looping) {
-								mediaplayer_rewind(self);
+								mediaplayer_just_seek_to(self, 100, true, false);
 								mediaplayer_set_pause(self, FALSE);
 							} else {
 								self->state = 2;
@@ -341,106 +581,8 @@ static gboolean event_callback(void* id) {
 					fl_value_set_string_take(evt, "value", fl_value_new_string(mpv_error_string(detail->error)));
 					fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
 				}
-			} else if (event->event_id == MPV_EVENT_FILE_LOADED) {
-				if (self->state == 1) {
-					double duration;
-					gboolean networking;
-					int64_t count;
-					mpv_get_property(self->mpv, "track-list/count", MPV_FORMAT_INT64, &count);
-					FlValue* tracks = fl_value_new_map();
-					for (uint i = 0; i < count; i++) {
-						FlValue* info = fl_value_new_map();
-						gchar* str;
-						gchar p[33];
-						sprintf(p, "track-list/%d/type", i);
-						mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str);
-						fl_value_set_string_take(info, "type", fl_value_new_string(str));
-						uint8_t type = g_str_equal(str, "video") ? 0 : g_str_equal(str, "audio") ? 1 : 2;
-						mpv_free(str);
-						int64_t trackId;
-						sprintf(p, "track-list/%d/id", i);
-						mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &trackId);
-						int64_t size;
-						double num;
-						sprintf(p, "track-list/%d/lang", i);
-						if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
-							UErrorCode status = U_ZERO_ERROR;
-							char langtag[ULOC_FULLNAME_CAPACITY];
-							uloc_toLanguageTag(str, langtag, ULOC_FULLNAME_CAPACITY, FALSE, &status); // we don't want ISO 639-2 codes
-							fl_value_set_string_take(info, "language", fl_value_new_string(U_FAILURE(status) ? str : langtag));
-							mpv_free(str);
-						}
-						sprintf(p, "track-list/%d/title", i);
-						if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
-							fl_value_set_string_take(info, "label", fl_value_new_string(str));
-							mpv_free(str);
-						}
-						sprintf(p, "track-list/%d/hls-bitrate", i);
-						if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
-							fl_value_set_string_take(info, "bitrate", fl_value_new_int(size));
-						} else {
-							sprintf(p, "track-list/%d/demux-bitrate", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
-								fl_value_set_string_take(info, "bitrate", fl_value_new_int(size));
-							}
-						}
-						sprintf(p, "track-list/%d/codec", i);
-						if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
-							fl_value_set_string_take(info, "format", fl_value_new_string(str));
-							mpv_free(str);
-						} else {
-							sprintf(p, "track-list/%d/format-name", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_STRING, &str)) {
-								fl_value_set_string_take(info, "format", fl_value_new_string(str));
-								mpv_free(str);
-							}
-						}
-						if (type == 0) {
-							uint16_t data[] = { (uint16_t)trackId, 0, 0 };
-							sprintf(p, "track-list/%d/demux-w", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_DOUBLE, &num)) {
-								fl_value_set_string_take(info, "width", fl_value_new_float(num));
-								data[1] = (uint16_t)size;
-							}
-							sprintf(p, "track-list/%d/demux-h", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_DOUBLE, &num)) {
-								fl_value_set_string_take(info, "height", fl_value_new_float(num));
-								data[2] = (uint16_t)size;
-							}
-							g_array_append_val(self->videoTracks, data);
-							sprintf(p, "track-list/%d/demux-fps", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_DOUBLE, &num)) {
-								fl_value_set_string_take(info, "frameRate", fl_value_new_float(num));
-							}
-						} else if (type == 1) {
-							sprintf(p, "track-list/%d/demux-channel-count", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
-								fl_value_set_string_take(info, "channels", fl_value_new_int(size));
-							}
-							sprintf(p, "track-list/%d/demux-samplerate", i);
-							if (!mpv_get_property(self->mpv, p, MPV_FORMAT_INT64, &size)) {
-								fl_value_set_string_take(info, "sampleRate", fl_value_new_int(size));
-							}
-						}
-						sprintf(p, "%d.%ld", type, trackId);
-						fl_value_set_string_take(tracks, p, info);
-					}
-					mpv_get_property(self->mpv, "duration/full", MPV_FORMAT_DOUBLE, &duration);
-					mpv_get_property(self->mpv, "demuxer-via-network", MPV_FORMAT_FLAG, &networking);
-					mpv_set_property(self->mpv, "volume", MPV_FORMAT_DOUBLE, &self->volume);
-					self->streaming = duration == 0;
-					self->networking = networking == TRUE;
-					self->state = 2;
-					mediaplayer_set_max_resolution_real(self);
-					g_autoptr(FlValue) evt = fl_value_new_map();
-					fl_value_set_string_take(evt, "event", fl_value_new_string("mediaInfo"));
-					fl_value_set_string_take(evt, "source", fl_value_new_string(self->source));
-					fl_value_set_string_take(evt, "duration", fl_value_new_int((int64_t)(duration * 1000)));
-					fl_value_set_string_take(evt, "tracks", tracks);
-					fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
-				}
 			} else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
-				if (self->state > 1) {
+				if (self->state > 0) {
 					int64_t tmp;
 					mpv_get_property(self->mpv, "dwidth", MPV_FORMAT_INT64, &tmp);
 					self->width = (GLsizei)tmp;
@@ -453,7 +595,22 @@ static gboolean event_callback(void* id) {
 					fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
 				}
 			} else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
-				if (self->state > 1) {
+				if (self->state == 1) { // file loaded
+					if (self->seeking) {
+						self->seeking = false;
+						mediaplayer_loaded(self);
+					} else {
+						double duration;
+						mpv_get_property(self->mpv, "duration/full", MPV_FORMAT_DOUBLE, &duration);
+						self->streaming = duration == 0;
+						if (!self->streaming && self->position > 0) {
+							mediaplayer_just_seek_to(self, self->position, true, true);
+						} else {
+							mediaplayer_loaded(self);
+						}
+					}
+				} else if (self->state > 1 && self->seeking) {
+					self->seeking = false;
 					g_autoptr(FlValue) evt = fl_value_new_map();
 					fl_value_set_string_take(evt, "event", fl_value_new_string("seekEnd"));
 					fl_event_channel_send(self->eventChannel, evt, NULL, NULL);
@@ -464,12 +621,12 @@ static gboolean event_callback(void* id) {
 	return FALSE;
 }
 
-static void wakeup_callback(void* id) {
+static void mediaplayer_wakeup_callback(void* id) {
 	// make sure event_callback is called in the main thread
-	g_idle_add(event_callback, id);
+	g_idle_add(mediaplayer_event_callback, id);
 }
 
-static void texture_update_callback(void* id) {
+static void mediaplayer_texture_update_callback(void* id) {
 	// this function is not called in the main thread
 	g_mutex_lock(&plugin->mutex);
 	Mediaplayer* self = g_tree_lookup(plugin->players, id);
@@ -502,8 +659,8 @@ static gboolean mediaplayer_texture_populate(FlTextureGL* texture, uint32_t* tar
 			self->fbo.h = self->height;
 		}
 		mpv_render_param params[] = {
-			{MPV_RENDER_PARAM_OPENGL_FBO, &self->fbo},
-			{MPV_RENDER_PARAM_INVALID, NULL},
+			{ MPV_RENDER_PARAM_OPENGL_FBO, &self->fbo },
+			{ MPV_RENDER_PARAM_INVALID, NULL },
 		};
 		mpv_render_context_render(self->mpvRenderContext, params);
 		*target = GL_TEXTURE_2D;
@@ -515,49 +672,41 @@ static gboolean mediaplayer_texture_populate(FlTextureGL* texture, uint32_t* tar
 	return FALSE;
 }
 
-static void mediaplayer_dispose(GObject* obj) {
-	Mediaplayer* self = MEDIAPLAYER(obj);
-	g_idle_remove_by_data(self);
-	fl_event_channel_send_end_of_stream(self->eventChannel, NULL, NULL);
-	mpv_render_context_free(self->mpvRenderContext);
-	mpv_destroy(self->mpv);
-	g_free(self->source);
-	g_array_free(self->videoTracks, TRUE);
-	fl_texture_registrar_unregister_texture(self->textureRegistrar, FL_TEXTURE(self));
-	if (self->texture) {
-		glDeleteTextures(1, &self->texture);
-		self->texture = 0;
-	}
-	if (self->fbo.fbo) {
-		glDeleteFramebuffers(1, (GLuint*)&self->fbo.fbo);
-		self->fbo.fbo = 0;
-	}
-	G_OBJECT_CLASS(mediaplayer_parent_class)->dispose(obj);
-}
-
 static void mediaplayer_class_init(MediaplayerClass* klass) {
 	FL_TEXTURE_GL_CLASS(klass)->populate = mediaplayer_texture_populate;
-	G_OBJECT_CLASS(klass)->dispose = mediaplayer_dispose;
 }
 
 static void mediaplayer_init(Mediaplayer* self) {
 	self->texture = 0;
-	self->width = 0;
-	self->height = 0;
+	self->width = self->height = 0;
 	self->fbo.fbo = 0;
-	self->fbo.w = 0;
-	self->fbo.h = 0;
+	self->fbo.w = self->fbo.h = 0;
 	self->fbo.internal_format = GL_RGBA8;
 	self->speed = 1;
-	self->looping = false;
 	self->state = 0;
-	self->position = 0;
-	self->bufferPosition = 0;
+	self->position = self->bufferPosition = 0;
 	self->source = NULL;
-	self->streaming = false;
-	self->networking = false;
+	self->preferredAudioLanguage = NULL;
+	self->preferredSubtitleLanguage = NULL;
+	self->looping = self->streaming = self->networking = self->seeking = false;
+	//self->mpvRenderContext = NULL;
+}
+
+static Mediaplayer* mediaplayer_new(FlMethodCodec* codec, FlBinaryMessenger* messenger, FlTextureRegistrar* textureRegistrar) {
+	Mediaplayer* self = MEDIAPLAYER(g_object_new(mediaplayer_get_type(), NULL));
+	FlTexture* texture = FL_TEXTURE(self);
+	self->textureRegistrar = textureRegistrar;
+	fl_texture_registrar_register_texture(self->textureRegistrar, texture);
+	self->id = fl_texture_get_id(texture);
+	gchar* name = g_strdup_printf("mediaplayer/%ld", self->id);
+	self->eventChannel = fl_event_channel_new(messenger, name, codec);
+	g_free(name);
 	self->mpv = mpv_create();
-	self->videoTracks = g_array_new(FALSE, FALSE, sizeof(uint16_t) * 3);
+	self->videoTracks = g_array_new(FALSE, FALSE, sizeof(MediaplayerVideoTrack));
+	self->audioTracks = g_array_new(FALSE, FALSE, sizeof(MediaplayerTrack));
+	self->subtitleTracks = g_array_new(FALSE, FALSE, sizeof(MediaplayerTrack));
+	g_array_set_clear_func(self->audioTracks, mediaplayer_track_free);
+	g_array_set_clear_func(self->subtitleTracks, mediaplayer_track_free);
 	mediaplayer_set_volume(self, 1);
 	//mpv_set_option_string(self->mpv, "terminal", "yes");
 	//mpv_set_option_string(self->mpv, "msg-level", "all=v");
@@ -573,50 +722,82 @@ static void mediaplayer_init(Mediaplayer* self) {
 	mpv_observe_property(self->mpv, 0, "demuxer-cache-time", MPV_FORMAT_DOUBLE);
 	mpv_observe_property(self->mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
 	mpv_observe_property(self->mpv, 0, "pause", MPV_FORMAT_FLAG);
-	mpv_opengl_init_params gl_init_params = { gl_init, NULL };
 	GdkDisplay* display = gdk_display_get_default();
+	void* func = NULL;
 	if (GDK_IS_WAYLAND_DISPLAY(display)) {
-		gl_init_params.get_proc_address_ctx = (void*)2;
+		func = eglGetProcAddress;
 	} else if (GDK_IS_X11_DISPLAY(display)) {
-		gl_init_params.get_proc_address_ctx = (void*)1;
+		func = glXGetProcAddressARB;
 	}
+	mpv_opengl_init_params gl_init_params = { mediaplayer_gl_init, func };
 	mpv_render_param params[] = {
-		{MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL},
-		{MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
-		{MPV_RENDER_PARAM_INVALID, NULL}
+		{ MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL },
+		{ MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },
+		{ MPV_RENDER_PARAM_INVALID, NULL }
 	};
 	mpv_render_context_create(&self->mpvRenderContext, self->mpv, params);
-}
-
-static Mediaplayer* mediaplayer_new(FlMethodCodec* codec, FlBinaryMessenger* messenger, FlTextureRegistrar* textureRegistrar) {
-	Mediaplayer* self = MEDIAPLAYER(g_object_new(mediaplayer_get_type(), NULL));
-	FlTexture* texture = FL_TEXTURE(self);
-	self->textureRegistrar = textureRegistrar;
-	fl_texture_registrar_register_texture(self->textureRegistrar, texture);
-	self->id = fl_texture_get_id(texture);
-	gchar* name = g_strdup_printf("mediaplayer/%ld", self->id);
-	self->eventChannel = fl_event_channel_new(messenger, name, codec);
-	g_free(name);
-	mpv_set_wakeup_callback(self->mpv, wakeup_callback, (gpointer)self->id);
-	mpv_render_context_set_update_callback(self->mpvRenderContext, texture_update_callback, (gpointer)self->id);
+	mpv_render_context_set_update_callback(self->mpvRenderContext, mediaplayer_texture_update_callback, (void*)self->id);
+	mpv_set_wakeup_callback(self->mpv, mediaplayer_wakeup_callback, (void*)self->id);
 	return self;
 }
 
+static void mediaplayer_destroy(void* obj) {
+	Mediaplayer* self = obj;
+	fl_texture_registrar_unregister_texture(self->textureRegistrar, FL_TEXTURE(self));
+	g_idle_remove_by_data(self);
+	//fl_event_channel_send_end_of_stream(self->eventChannel, NULL, NULL);
+	g_object_unref(self->eventChannel);
+	mpv_render_context_free(self->mpvRenderContext);
+	mpv_destroy(self->mpv);
+	g_free(self->source);
+	g_free(self->preferredAudioLanguage);
+	g_free(self->preferredSubtitleLanguage);
+	g_array_free(self->videoTracks, TRUE);
+	g_array_free(self->audioTracks, TRUE);
+	g_array_free(self->subtitleTracks, TRUE);
+	if (self->texture) {
+		glDeleteTextures(1, &self->texture);
+		self->texture = 0;
+	}
+	if (self->fbo.fbo) {
+		glDeleteFramebuffers(1, (GLuint*)&self->fbo.fbo);
+		self->fbo.fbo = 0;
+	}
+	g_object_unref(self);
+}
+
 /* plugin implementation */
+
+static gint mediaplayer_plugin_compare_key(const void* a, const void* b, void* user_data) {
+	const int64_t i = (int64_t)a;
+	const int64_t j = (int64_t)b;
+	if (i > j) {
+		return 1;
+	} else if (i < j) {
+		return -1;
+	} else {
+		return 0;
+	}
+}
+
+static gboolean mediaplayer_plugin_remove_player(void* key, void* value, void* tree) {
+	g_tree_remove(tree, key);
+	return FALSE;
+}
+
 static void mediaplayer_plugin_clear(MediaplayerPlugin* self) {
 	g_mutex_lock(&self->mutex);
-	g_tree_foreach(self->players, release_object_on_tree, NULL);
-	g_tree_remove_all(self->players);
+	g_tree_foreach(self->players, mediaplayer_plugin_remove_player, self->players);
 	g_mutex_unlock(&self->mutex);
 }
 
 static void mediaplayer_plugin_dispose(GObject* object) {
-	G_OBJECT_CLASS(mediaplayer_plugin_parent_class)->dispose(object);
 	MediaplayerPlugin* self = MEDIAPLAYER_PLUGIN(object);
 	mediaplayer_plugin_clear(self);
 	g_object_unref(self->methodChannel);
 	g_object_unref(self->codec);
 	g_tree_destroy(self->players);
+	G_OBJECT_CLASS(mediaplayer_plugin_parent_class)->dispose(object);
 }
 
 static void mediaplayer_plugin_class_init(MediaplayerPluginClass* klass) {
@@ -625,88 +806,88 @@ static void mediaplayer_plugin_class_init(MediaplayerPluginClass* klass) {
 
 static void mediaplayer_plugin_init(MediaplayerPlugin* self) {
 	self->codec = FL_METHOD_CODEC(fl_standard_method_codec_new());
-	self->players = g_tree_new(compare_key);
+	self->players = g_tree_new_full(mediaplayer_plugin_compare_key, NULL, NULL, mediaplayer_destroy);
 	g_mutex_init(&self->mutex);
 	printf("mutex init: %p\n", &self->mutex);
 }
 
-static void mediaplayer_plugin_method_call(FlMethodChannel* channel, FlMethodCall* method_call, gpointer user_data) {
-	MediaplayerPlugin* self = MEDIAPLAYER_PLUGIN(user_data);
+static void mediaplayer_plugin_method_call(FlMethodChannel* channel, FlMethodCall* method_call, void* user_data) {
+	MediaplayerPlugin* self = user_data;
 	const gchar* method = fl_method_call_get_name(method_call);
 	FlValue* args = fl_method_call_get_args(method_call);
 	g_autoptr(FlMethodResponse) response = NULL;
-	if (strcmp(method, "create") == 0) {
+	if (g_str_equal(method, "create")) {
 		Mediaplayer* player = mediaplayer_new(self->codec, self->messenger, self->textureRegistrar);
 		g_mutex_lock(&self->mutex);
-		g_tree_insert(self->players, (gpointer)player->id, player);
+		g_tree_insert(self->players, (void*)player->id, player);
 		g_mutex_unlock(&self->mutex);
 		g_autoptr(FlValue) result = fl_value_new_map();
 		fl_value_set_string_take(result, "id", fl_value_new_int(player->id));
 		response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
-	} else if (strcmp(method, "dispose") == 0) {
+	} else if (g_str_equal(method, "dispose")) {
 		if (fl_value_get_type(args) == FL_VALUE_TYPE_NULL) {
 			mediaplayer_plugin_clear(self);
 		} else {
-			gpointer id = (gpointer)fl_value_get_int(args);
+			const void* id = (void*)fl_value_get_int(args);
 			g_mutex_lock(&self->mutex);
-			g_object_unref(g_tree_lookup(self->players, id));
 			g_tree_remove(self->players, id);
 			g_mutex_unlock(&self->mutex);
 		}
-	} else if (strcmp(method, "open") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "open")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const gchar* value = fl_value_get_string(fl_value_lookup_string(args, "value"));
 		mediaplayer_open(player, value);
-	} else if (strcmp(method, "close") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(args));
+	} else if (g_str_equal(method, "close")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(args));
 		mediaplayer_close(player);
-	} else if (strcmp(method, "play") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(args));
+	} else if (g_str_equal(method, "play")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(args));
 		mediaplayer_play(player);
-	} else if (strcmp(method, "pause") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(args));
+	} else if (g_str_equal(method, "pause")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(args));
 		mediaplayer_pause(player);
-	} else if (strcmp(method, "seekTo") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
-		const int64_t value = fl_value_get_int(fl_value_lookup_string(args, "value"));
-		mediaplayer_seek_to(player, value);
-	} else if (strcmp(method, "setVolume") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "seekTo")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
+		const int64_t position = fl_value_get_int(fl_value_lookup_string(args, "position"));
+		const bool fast = fl_value_get_bool(fl_value_lookup_string(args, "fast"));
+		mediaplayer_seek_to(player, position, fast);
+	} else if (g_str_equal(method, "setVolume")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const double value = fl_value_get_float(fl_value_lookup_string(args, "value"));
 		mediaplayer_set_volume(player, value);
-	} else if (strcmp(method, "setSpeed") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "setSpeed")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const double value = fl_value_get_float(fl_value_lookup_string(args, "value"));
 		mediaplayer_set_speed(player, value);
-	} else if (strcmp(method, "setLooping") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "setLooping")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const bool value = fl_value_get_bool(fl_value_lookup_string(args, "value"));
 		mediaplayer_set_looping(player, value);
-	} else if (strcmp(method, "setShowSubtitle") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "setShowSubtitle")) {
+		const Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const bool value = fl_value_get_bool(fl_value_lookup_string(args, "value"));
 		mediaplayer_set_show_subtitle(player, value);
-	} else if (strcmp(method, "setPreferredAudioLanguage") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "setPreferredAudioLanguage")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const gchar* value = fl_value_get_string(fl_value_lookup_string(args, "value"));
-		mediaplayer_set_preferred_audio_language(player, value);
-	} else if (strcmp(method, "setPreferredSubtitleLanguage") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+		mediaplayer_set_preferred_audio_language(player, value[0] == 0 ? NULL : value);
+	} else if (g_str_equal(method, "setPreferredSubtitleLanguage")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const gchar* value = fl_value_get_string(fl_value_lookup_string(args, "value"));
-		mediaplayer_set_preferred_subtitle_language(player, value);
-	} else if (strcmp(method, "setMaxBitRate") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
-		const uint32_t value = (uint32_t)fl_value_get_int(fl_value_lookup_string(args, "value"));
+		mediaplayer_set_preferred_subtitle_language(player, value[0] == 0 ? NULL : value);
+	} else if (g_str_equal(method, "setMaxBitRate")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
+		const uint32_t value = fl_value_get_int(fl_value_lookup_string(args, "value"));
 		mediaplayer_set_max_bitrate(player, value);
-	} else if (strcmp(method, "setMaxResolution") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
+	} else if (g_str_equal(method, "setMaxResolution")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
 		const uint16_t width = (uint16_t)fl_value_get_float(fl_value_lookup_string(args, "width"));
 		const uint16_t height = (uint16_t)fl_value_get_float(fl_value_lookup_string(args, "height"));
 		mediaplayer_set_max_resolution(player, width, height);
-	} else if (strcmp(method, "overrideTrack") == 0) {
-		Mediaplayer* player = (Mediaplayer*)g_tree_lookup(self->players, (gpointer)fl_value_get_int(fl_value_lookup_string(args, "id")));
-		const uint8_t typeId = (uint8_t)fl_value_get_int(fl_value_lookup_string(args, "groupId"));
-		uint16_t trackId = (uint16_t)fl_value_get_int(fl_value_lookup_string(args, "trackId"));
+	} else if (g_str_equal(method, "overrideTrack")) {
+		Mediaplayer* player = g_tree_lookup(self->players, (void*)fl_value_get_int(fl_value_lookup_string(args, "id")));
+		const uint8_t typeId = fl_value_get_int(fl_value_lookup_string(args, "groupId"));
+		const uint16_t trackId = fl_value_get_int(fl_value_lookup_string(args, "trackId"));
 		const bool enabled = fl_value_get_bool(fl_value_lookup_string(args, "value"));
 		mediaplayer_overrideTrack(player, typeId, trackId, enabled);
 	} else {
@@ -720,6 +901,7 @@ static void mediaplayer_plugin_method_call(FlMethodChannel* channel, FlMethodCal
 }
 
 /* plugin registration */
+
 void mediaplayer_plugin_register_with_registrar(FlPluginRegistrar* registrar) {
 	setlocale(LC_NUMERIC, "C");
 	plugin = MEDIAPLAYER_PLUGIN(g_object_new(mediaplayer_plugin_get_type(), NULL));

@@ -131,7 +131,6 @@ class SubtitlePainter(context: Context) {
 	 * latter only checks the text of each sequence, and does not check for equality of styling that
 	 * may be embedded within the {@link CharSequence}s.
 	 */
-	//@SuppressWarnings("UndefinedEquals")
 	private fun areCharSequencesEqual(first: CharSequence?, second: CharSequence?): Boolean {
 		// Some CharSequence implementations don't perform a cheap referential equality check in their
 		// equals methods, so we perform one explicitly here.
@@ -231,7 +230,6 @@ class SubtitlePainter(context: Context) {
 		drawLayout(canvas, isTextCue)
 	}
 
-	//@RequiresNonNull("cueText")
 	private fun setupTextLayout() {
 		val cueText = if (this.cueText is SpannableStringBuilder) {
 			this.cueText as SpannableStringBuilder
@@ -387,7 +385,6 @@ class SubtitlePainter(context: Context) {
 		this.textPaddingX = textPaddingX
 	}
 
-	//@RequiresNonNull("cueBitmap")
 	private fun setupBitmapLayout() {
 		val cueBitmap = this.cueBitmap!!
 		val parentWidth = parentRight - parentLeft

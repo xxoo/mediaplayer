@@ -70,10 +70,13 @@ class Mediaplayer extends MediaplayerInterface {
               playbackState.value = PlaybackState.paused;
               mediaInfo.value = MediaInfo(
                 e['duration'],
-                (e['audioTracks'] as Map).map((k, v) =>
-                    MapEntry(k as String, AudioInfo.fromMap(v as Map))),
-                (e['subtitleTracks'] as Map).map((k, v) =>
-                    MapEntry(k as String, SubtitleInfo.fromMap(v as Map))),
+                (e['audioTracks'] as Map).map(
+                  (k, v) => MapEntry(k as String, AudioInfo.fromMap(v as Map)),
+                ),
+                (e['subtitleTracks'] as Map).map(
+                  (k, v) =>
+                      MapEntry(k as String, SubtitleInfo.fromMap(v as Map)),
+                ),
                 _source!,
               );
               if (mediaInfo.value!.duration == 0) {
@@ -95,9 +98,10 @@ class Mediaplayer extends MediaplayerInterface {
             }
           } else if (e['event'] == 'position') {
             if (mediaInfo.value != null) {
-              position.value = e['value'] > mediaInfo.value!.duration
-                  ? mediaInfo.value!.duration
-                  : e['value'] < 0
+              position.value =
+                  e['value'] > mediaInfo.value!.duration
+                      ? mediaInfo.value!.duration
+                      : e['value'] < 0
                       ? 0
                       : e['value'];
             }
@@ -105,9 +109,10 @@ class Mediaplayer extends MediaplayerInterface {
             if (mediaInfo.value != null) {
               final start = e['start'] as int;
               final end = e['end'] as int;
-              bufferRange.value = start == 0 && end == 0
-                  ? BufferRange.empty
-                  : BufferRange(start, end);
+              bufferRange.value =
+                  start == 0 && end == 0
+                      ? BufferRange.empty
+                      : BufferRange(start, end);
             }
           } else if (e['event'] == 'error') {
             // ignore errors when player is closed
@@ -256,10 +261,7 @@ class Mediaplayer extends MediaplayerInterface {
       if (id != null) {
         error.value = null;
         _close();
-        _methodChannel.invokeMethod('open', {
-          'id': id,
-          'value': source,
-        });
+        _methodChannel.invokeMethod('open', {'id': id, 'value': source});
       }
       loading.value = true;
     }
@@ -501,47 +503,43 @@ class Mediaplayer extends MediaplayerInterface {
   }
 
   void _setMaxResolution() => _methodChannel.invokeMethod('setMaxResolution', {
-        'id': id,
-        'width': maxResolution.value.width,
-        'height': maxResolution.value.height,
-      });
+    'id': id,
+    'width': maxResolution.value.width,
+    'height': maxResolution.value.height,
+  });
 
   void _setMaxBitRate() => _methodChannel.invokeMethod('setMaxBitRate', {
-        'id': id,
-        'value': maxBitRate.value,
-      });
+    'id': id,
+    'value': maxBitRate.value,
+  });
 
   void _setVolume() => _methodChannel.invokeMethod('setVolume', {
-        'id': id,
-        'value': volume.value,
-      });
+    'id': id,
+    'value': volume.value,
+  });
 
-  void _setSpeed() => _methodChannel.invokeMethod('setSpeed', {
-        'id': id,
-        'value': speed.value,
-      });
+  void _setSpeed() =>
+      _methodChannel.invokeMethod('setSpeed', {'id': id, 'value': speed.value});
 
   void _setLooping() => _methodChannel.invokeMethod('setLooping', {
-        'id': id,
-        'value': looping.value,
-      });
+    'id': id,
+    'value': looping.value,
+  });
 
-  void _setPreferredAudioLanguage() =>
-      _methodChannel.invokeMethod('setPreferredAudioLanguage', {
-        'id': id,
-        'value': preferredAudioLanguage.value ?? '',
-      });
+  void _setPreferredAudioLanguage() => _methodChannel.invokeMethod(
+    'setPreferredAudioLanguage',
+    {'id': id, 'value': preferredAudioLanguage.value ?? ''},
+  );
 
-  void _setPreferredSubtitleLanguage() =>
-      _methodChannel.invokeMethod('setPreferredSubtitleLanguage', {
-        'id': id,
-        'value': preferredSubtitleLanguage.value ?? '',
-      });
+  void _setPreferredSubtitleLanguage() => _methodChannel.invokeMethod(
+    'setPreferredSubtitleLanguage',
+    {'id': id, 'value': preferredSubtitleLanguage.value ?? ''},
+  );
 
   void _setShowSubtitle() => _methodChannel.invokeMethod('setShowSubtitle', {
-        'id': id,
-        'value': showSubtitle.value,
-      });
+    'id': id,
+    'value': showSubtitle.value,
+  });
 
   void _close() {
     _seeking = false;
