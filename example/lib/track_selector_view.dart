@@ -2,7 +2,8 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:mediaplayer/index.dart';
+import 'package:set_state_async/set_state_async.dart';
+import 'package:mediaplayer/mediaplayer.dart';
 
 class TrackSelectorView extends StatefulWidget {
   const TrackSelectorView({super.key});
@@ -22,23 +23,22 @@ class _TrackSelectorViewState extends State<TrackSelectorView>
   );
   final _inputController = TextEditingController();
 
-  void _update() => setState(() {});
-
   @override
   initState() {
     super.initState();
-    _player.showSubtitle.addListener(_update);
-    _player.playbackState.addListener(_update);
-    _player.position.addListener(_update);
-    _player.overrideAudio.addListener(_update);
-    _player.overrideSubtitle.addListener(_update);
-    _player.videoSize.addListener(_update);
-    _player.loading.addListener(_update);
-    _player.mediaInfo.addListener(() => setState(() {
-          if (_player.mediaInfo.value != null) {
-            _inputController.text = _player.mediaInfo.value!.source;
-          }
-        }));
+    _player.showSubtitle.addListener(setStateAsync);
+    _player.playbackState.addListener(setStateAsync);
+    _player.position.addListener(setStateAsync);
+    _player.overrideAudio.addListener(setStateAsync);
+    _player.overrideSubtitle.addListener(setStateAsync);
+    _player.videoSize.addListener(setStateAsync);
+    _player.loading.addListener(setStateAsync);
+    _player.mediaInfo.addListener(() {
+      if (_player.mediaInfo.value != null) {
+        _inputController.text = _player.mediaInfo.value!.source;
+      }
+      setStateAsync();
+    });
     _player.error.addListener(() {
       if (_player.error.value != null) {
         debugPrint('Error: ${_player.error.value}');
@@ -47,232 +47,222 @@ class _TrackSelectorViewState extends State<TrackSelectorView>
     _player.bufferRange.addListener(() {
       if (_player.bufferRange.value != BufferRange.empty) {
         debugPrint(
-          'position: ${_player.position.value} buffer start: ${_player.bufferRange.value.start} buffer end: ${_player.bufferRange.value.end}',
-        );
+            'position: ${_player.position.value} buffer start: ${_player.bufferRange.value.start} buffer end: ${_player.bufferRange.value.end}');
       }
     });
   }
 
   @override
   void dispose() {
-    //We should dispose this player. cause it's managed by the user.
+    //We should dispose this player. cause it's created by user.
     _player.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: _inputController,
-                    decoration: const InputDecoration(
-                      labelText: 'Open Media',
-                      hintText: 'Please input a media URL',
-                    ),
-                    keyboardType: TextInputType.url,
-                    onSubmitted: (value) {
-                      if (value.isNotEmpty && Uri.tryParse(value) != null) {
-                        _player.open(value);
-                      }
-                    },
-                  ),
-                  AspectRatio(
-                    aspectRatio: _player.videoSize.value == Size.zero
-                        ? 16 / 9
-                        : _player.videoSize.value.width /
-                            _player.videoSize.value.height,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        MediaplayerView(initPlayer: _player),
-                        if (_player.loading.value)
-                          const CircularProgressIndicator(),
-                      ],
-                    ),
-                  ),
-                  Slider(
-                    // min: 0,
-                    max: (_player.mediaInfo.value?.duration ?? 0).toDouble(),
-                    value: _player.position.value.toDouble(),
-                    onChanged: (value) => _player.seekTo(value.toInt()),
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Text(
-                        _formatDuration(
-                          Duration(milliseconds: _player.position.value),
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        _player.error.value ??
-                            '${_player.videoSize.value.width.toInt()}x${_player.videoSize.value.height.toInt()}',
-                      ),
-                      const Spacer(),
-                      Text(
-                        _formatDuration(
-                          Duration(
-                            milliseconds:
-                                _player.mediaInfo.value?.duration ?? 0,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.play_arrow),
-                        onPressed: () => _player.play(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.pause),
-                        onPressed: () => _player.pause(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.stop),
-                        onPressed: () => _player.close(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.fast_rewind),
-                        onPressed: () =>
-                            _player.seekTo(_player.position.value - 5000),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.fast_forward),
-                        onPressed: () =>
-                            _player.seekTo(_player.position.value + 5000),
-                      ),
-                      const Spacer(),
-                      Icon(
-                        _player.playbackState.value == PlaybackState.playing
-                            ? Icons.play_arrow
-                            : _player.playbackState.value ==
-                                    PlaybackState.paused
-                                ? Icons.pause
-                                : Icons.stop,
-                        size: 16.0,
-                        color: const Color(0x80000000),
-                      ),
-                      if (kIsWeb) ...[
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.picture_in_picture),
-                          onPressed: () => _player.setPictureInPicture(true),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.fullscreen),
-                          onPressed: () => _player.setFullscreen(true),
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
-              child: Wrap(
-                spacing: 16,
-                runSpacing: 16,
-                children: [
-                  DropdownMenu(
-                    width: 150,
-                    dropdownMenuEntries: const [
-                      DropdownMenuEntry(value: "", label: "Auto detect"),
-                      DropdownMenuEntry(value: "en", label: "English"),
-                      DropdownMenuEntry(value: "it", label: "Italian"),
-                    ],
-                    label: const Text(
-                      "Audio Language",
-                      style: TextStyle(fontSize: 14),
-                    ),
-                    onSelected: (value) =>
-                        _player.setPreferredAudioLanguage(value ?? ""),
-                  ),
-                  DropdownMenu(
-                    width: 150,
-                    dropdownMenuEntries: const [
-                      DropdownMenuEntry(value: "", label: "Auto detect"),
-                      DropdownMenuEntry(value: "en", label: "English"),
-                      DropdownMenuEntry(value: "ja", label: "Japanese"),
-                      DropdownMenuEntry(value: "es", label: "Spanish"),
-                    ],
-                    label: const Text(
-                      "Subtitle Language",
-                      style: TextStyle(fontSize: 14),
-                    ),
-                    onSelected: (value) =>
-                        _player.setPreferredSubtitleLanguage(value ?? ""),
-                  ),
-                  DropdownMenu(
-                    width: 150,
-                    dropdownMenuEntries: const [
-                      DropdownMenuEntry(value: "0", label: "Unlimited"),
-                      DropdownMenuEntry(value: "4194304", label: "4Mbps"),
-                      DropdownMenuEntry(value: "2097152", label: "2Mbps"),
-                      DropdownMenuEntry(value: "1048576", label: "1Mbps"),
-                    ],
-                    label: const Text(
-                      "Max bitrate",
-                      style: TextStyle(fontSize: 14),
-                    ),
-                    onSelected: (value) =>
-                        _player.setMaxBitRate(int.parse(value!)),
-                  ),
-                  DropdownMenu(
-                    width: 150,
-                    dropdownMenuEntries: const [
-                      DropdownMenuEntry(value: "0x0", label: "Unlimited"),
-                      DropdownMenuEntry(value: "1920x1080", label: "1080p"),
-                      DropdownMenuEntry(value: "1280x720", label: "720p"),
-                      DropdownMenuEntry(value: "640x360", label: "360p"),
-                    ],
-                    label: const Text(
-                      "Max Resolution",
-                      style: TextStyle(fontSize: 14),
-                    ),
-                    onSelected: (value) {
-                      final parts = value!.split('x');
-                      _player.setMaxResolution(
-                        Size(double.parse(parts[0]), double.parse(parts[1])),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+          child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Checkbox(
-                  value: _player.showSubtitle.value,
-                  onChanged: (value) => _player.setShowSubtitle(value ?? false),
+                TextField(
+                  controller: _inputController,
+                  decoration: const InputDecoration(
+                    labelText: 'Open Media',
+                    hintText: 'Please input a media URL',
+                  ),
+                  keyboardType: TextInputType.url,
+                  onSubmitted: (value) {
+                    if (value.isNotEmpty && Uri.tryParse(value) != null) {
+                      _player.open(value);
+                    }
+                  },
                 ),
-                Text(
-                  'Subtitle Tracks: ${_player.mediaInfo.value?.subtitleTracks.length ?? 0}',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 14),
+                AspectRatio(
+                  aspectRatio: _player.videoSize.value == Size.zero
+                      ? 16 / 9
+                      : _player.videoSize.value.width /
+                          _player.videoSize.value.height,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      MediaplayerView(initPlayer: _player),
+                      if (_player.loading.value)
+                        const CircularProgressIndicator(),
+                    ],
+                  ),
+                ),
+                Slider(
+                  // min: 0,
+                  max: (_player.mediaInfo.value?.duration ?? 0).toDouble(),
+                  value: _player.position.value.toDouble(),
+                  onChanged: (value) => _player.seekTo(value.toInt()),
+                ),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Text(_formatDuration(
+                      Duration(milliseconds: _player.position.value))),
+                  const Spacer(),
+                  Text(
+                    _player.error.value ??
+                        '${_player.videoSize.value.width.toInt()}x${_player.videoSize.value.height.toInt()}',
+                  ),
+                  const Spacer(),
+                  Text(_formatDuration(
+                    Duration(
+                        milliseconds: _player.mediaInfo.value?.duration ?? 0),
+                  )),
+                ]),
+                Row(children: [
+                  IconButton(
+                    icon: const Icon(Icons.play_arrow),
+                    onPressed: () => _player.play(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.pause),
+                    onPressed: () => _player.pause(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.stop),
+                    onPressed: () => _player.close(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.fast_rewind),
+                    onPressed: () =>
+                        _player.seekTo(_player.position.value - 5000),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.fast_forward),
+                    onPressed: () =>
+                        _player.seekTo(_player.position.value + 5000),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    _player.playbackState.value == PlaybackState.playing
+                        ? Icons.play_arrow
+                        : _player.playbackState.value == PlaybackState.paused
+                            ? Icons.pause
+                            : Icons.stop,
+                    size: 16.0,
+                    color: const Color(0x80000000),
+                  ),
+                  if (kIsWeb) ...[
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.picture_in_picture),
+                      onPressed: () => _player.setPictureInPicture(true),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.fullscreen),
+                      onPressed: () => _player.setFullscreen(true),
+                    ),
+                  ],
+                ]),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: [
+                DropdownMenu(
+                  width: 150,
+                  dropdownMenuEntries: const [
+                    DropdownMenuEntry(value: "", label: "Auto detect"),
+                    DropdownMenuEntry(value: "en", label: "English"),
+                    DropdownMenuEntry(value: "it", label: "Italian"),
+                  ],
+                  label: const Text(
+                    "Audio Language",
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  onSelected: (value) =>
+                      _player.setPreferredAudioLanguage(value ?? ""),
+                ),
+                DropdownMenu(
+                  width: 150,
+                  dropdownMenuEntries: const [
+                    DropdownMenuEntry(value: "", label: "Auto detect"),
+                    DropdownMenuEntry(value: "en", label: "English"),
+                    DropdownMenuEntry(value: "ja", label: "Japanese"),
+                    DropdownMenuEntry(value: "es", label: "Spanish"),
+                  ],
+                  label: const Text(
+                    "Subtitle Language",
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  onSelected: (value) =>
+                      _player.setPreferredSubtitleLanguage(value ?? ""),
+                ),
+                DropdownMenu(
+                  width: 150,
+                  dropdownMenuEntries: const [
+                    DropdownMenuEntry(value: "0", label: "Unlimited"),
+                    DropdownMenuEntry(value: "4194304", label: "4Mbps"),
+                    DropdownMenuEntry(value: "2097152", label: "2Mbps"),
+                    DropdownMenuEntry(value: "1048576", label: "1Mbps"),
+                  ],
+                  label: const Text(
+                    "Max bitrate",
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  onSelected: (value) =>
+                      _player.setMaxBitRate(int.parse(value!)),
+                ),
+                DropdownMenu(
+                  width: 150,
+                  dropdownMenuEntries: const [
+                    DropdownMenuEntry(value: "0x0", label: "Unlimited"),
+                    DropdownMenuEntry(value: "1920x1080", label: "1080p"),
+                    DropdownMenuEntry(value: "1280x720", label: "720p"),
+                    DropdownMenuEntry(value: "640x360", label: "360p"),
+                  ],
+                  label: const Text(
+                    "Max Resolution",
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  onSelected: (value) {
+                    final parts = value!.split('x');
+                    _player.setMaxResolution(
+                        Size(double.parse(parts[0]), double.parse(parts[1])));
+                  },
                 ),
               ],
             ),
-            _buildListView(false),
-            Text(
-              'Audio Tracks: ${_player.mediaInfo.value?.audioTracks.length ?? 0}',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Checkbox(
+                value: _player.showSubtitle.value,
+                onChanged: (value) => _player.setShowSubtitle(value ?? false),
+              ),
+              Text(
+                'Subtitle Tracks: ${_player.mediaInfo.value?.subtitleTracks.length ?? 0}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          _buildListView(false),
+          Text(
+            'Audio Tracks: ${_player.mediaInfo.value?.audioTracks.length ?? 0}',
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
             ),
-            _buildListView(true),
-          ],
-        ),
-      );
+          ),
+          _buildListView(true),
+        ],
+      ));
 
   Widget _buildListView(bool isAudio) {
     final Set<String> ids;

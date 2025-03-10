@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:inview_notifier_list/inview_notifier_list.dart';
-import 'package:mediaplayer/index.dart';
+import 'package:set_state_async/set_state_async.dart';
+import 'package:mediaplayer/mediaplayer.dart';
 import 'sources.dart';
 
 class VideoListView extends StatefulWidget {
@@ -14,25 +15,23 @@ class VideoListView extends StatefulWidget {
 class _VideoListView extends State<VideoListView> with SetStateAsync {
   final _players = <Mediaplayer>[];
 
-  void _update() => setState(() {});
-
   @override
   void initState() {
     super.initState();
     for (var i = 0; i < videoSources.length; i++) {
       final player = Mediaplayer(initLooping: true);
       // Listening to mediaInfo is optional in this case.
-      // As loading always becomes false when mediaInfo is perpared.
-      // player.mediaInfo.addListener(() => setState(() {}));
-      player.loading.addListener(_update);
-      player.videoSize.addListener(_update);
+      // Since loading always becomes false when mediaInfo is perpared.
+      // player.mediaInfo.addListener(setStateAsync);
+      player.loading.addListener(setStateAsync);
+      player.videoSize.addListener(setStateAsync);
       _players.add(player);
     }
   }
 
   @override
   void dispose() {
-    // We should dispose all the players. cause they are managed by the user.
+    // We should dispose all the players. cause they are created by user.
     for (final player in _players) {
       player.dispose();
     }
@@ -41,7 +40,10 @@ class _VideoListView extends State<VideoListView> with SetStateAsync {
 
   @override
   Widget build(BuildContext context) => InViewNotifierList(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 200),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 200,
+        ),
         isInViewPortCondition:
             (double deltaTop, double deltaBottom, double viewPortDimension) =>
                 deltaTop < (0.5 * viewPortDimension) &&
@@ -62,7 +64,10 @@ class _VideoListView extends State<VideoListView> with SetStateAsync {
                       _players[index].videoSize.value == Size.zero)
                     const Text(
                       'Audio only',
-                      style: TextStyle(color: Colors.white, fontSize: 24),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                      ),
                     ),
                   if (_players[index].loading.value)
                     const CircularProgressIndicator(),

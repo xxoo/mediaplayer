@@ -1,6 +1,4 @@
 #include "include/mediaplayer/mediaplayer_plugin.h"
-
-#include <flutter_linux/flutter_linux.h>
 #include <ctype.h>
 #include <locale.h>
 #include <gdk/gdkx.h>
@@ -119,15 +117,15 @@ static void mediaplayer_just_seek_to(Mediaplayer* self, const int64_t position, 
 
 static uint8_t mediaplayer_split_lang(const gchar* lang, gchar* result[3]) {
 	uint8_t count = 0;
-	uint16_t start = 0;
-	uint16_t pos1 = 0;
-	uint16_t pos2 = 0;
+	uint8_t start = 0;
+	uint8_t pos1 = 0;
+	uint8_t pos2 = 0;
 	while (lang[pos1] == '_' || lang[pos1] == '-' || lang[pos1] == '.') {
 		pos1++;
 	}
-	gchar* str = g_malloc(strlen(lang) - pos1 + 1);
+	gchar* str = g_malloc(MIN(strlen(lang) - pos1 + 1, UINT8_MAX));
 	while (count < 3) {
-		const bool end = !lang[pos1] || lang[pos1] == '.';
+		const bool end = pos1 == UINT8_MAX || !lang[pos1] || lang[pos1] == '.';
 		if (end || lang[pos1] == '_' || lang[pos1] == '-') {
 			str[pos2] = 0;
 			if (pos2 > start) {
@@ -714,6 +712,7 @@ static Mediaplayer* mediaplayer_new(FlMethodCodec* codec, FlBinaryMessenger* mes
 	mpv_set_property_string(self->mpv, "hwdec", "auto-safe");
 	mpv_set_property_string(self->mpv, "keep-open", "yes");
 	mpv_set_property_string(self->mpv, "idle", "yes");
+	mpv_set_property_string(self->mpv, "framedrop", "yes");
 	//mpv_set_property_string(self->mpv, "sub-create-cc-track", "yes");
 	//mpv_set_property_string(self->mpv, "cache", "no");
 	mediaplayer_set_show_subtitle(self, false);

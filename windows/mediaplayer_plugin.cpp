@@ -31,7 +31,7 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 	static DispatcherQueueController dispatcherController;
 	static DispatcherQueue dispatcherQueue;
 
-	static char lower(char c) {
+	static char lower(const char c) {
 		return c >= 'A' && c <= 'Z' ? c + 32 : c;
 	}
 
@@ -217,28 +217,24 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 
 	int16_t getDefaultAudioTrack(const string& lang) {
 		auto tracks = mediaPlayer.Source().as<MediaPlaybackItem>().AudioTracks();
-		if (tracks.Size() == 0) {
-			return -1;
-		} else {
-			vector<string> toks;
-			split(lang, '-', toks);
-			map<uint16_t, vector<string>> lang1;
-			map<uint16_t, vector<string>> lang2;
-			for (uint16_t i = 0; i < tracks.Size(); i++) {
-				vector<string> t;
-				split(to_string(tracks.GetAt(i).Language()), '-', t);
-				if (t[0] == toks[0]) {
-					lang1[i] = t;
-					if (t.size() > 1 && toks.size() > 1 && t[1] == toks[1]) {
-						lang2[i] = t;
-						if (t.size() > 2 && toks.size() > 2 && t[2] == toks[2]) {
-							return i;
-						}
+		vector<string> toks;
+		split(lang, '-', toks);
+		map<uint16_t, vector<string>> lang1;
+		map<uint16_t, vector<string>> lang2;
+		for (uint16_t i = 0; i < tracks.Size(); i++) {
+			vector<string> t;
+			split(to_string(tracks.GetAt(i).Language()), '-', t);
+			if (t[0] == toks[0]) {
+				lang1[i] = t;
+				if (t.size() > 1 && toks.size() > 1 && t[1] == toks[1]) {
+					lang2[i] = t;
+					if (t.size() > 2 && toks.size() > 2 && t[2] == toks[2]) {
+						return i;
 					}
 				}
 			}
-			return max(getBestMatch(lang1, lang2), (int16_t)0);
 		}
+		return max<int16_t>(getBestMatch(lang1, lang2), tracks.Size() > 0 ? 0 : -1);
 	}
 
 	int16_t getDefaultSubtitleTrack(const string& lang) {
@@ -247,24 +243,30 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		split(lang, '-', toks);
 		map<uint16_t, vector<string>> lang1;
 		map<uint16_t, vector<string>> lang2;
+		int16_t def = -1;
 		for (uint16_t i = 0; i < tracks.Size(); i++) {
 			auto track = tracks.GetAt(i);
 			auto kind = track.TimedMetadataKind();
-			if ((kind == TimedMetadataKind::Caption || kind == TimedMetadataKind::Subtitle || kind == TimedMetadataKind::ImageSubtitle) && to_string(track.Language()) == lang) {
-				vector<string> t;
-				split(to_string(tracks.GetAt(i).Language()), '-', t);
-				if (t[0] == toks[0]) {
-					lang1[i] = t;
-					if (t.size() > 1 && toks.size() > 1 && t[1] == toks[1]) {
-						lang2[i] = t;
-						if (t.size() > 2 && toks.size() > 2 && t[2] == toks[2]) {
-							return i;
+			if ((kind == TimedMetadataKind::Caption || kind == TimedMetadataKind::Subtitle || kind == TimedMetadataKind::ImageSubtitle)) {
+				if (def < 0) {
+					def = i;
+				}
+				if (to_string(track.Language()) == lang) {
+					vector<string> t;
+					split(to_string(tracks.GetAt(i).Language()), '-', t);
+					if (t[0] == toks[0]) {
+						lang1[i] = t;
+						if (t.size() > 1 && toks.size() > 1 && t[1] == toks[1]) {
+							lang2[i] = t;
+							if (t.size() > 2 && toks.size() > 2 && t[2] == toks[2]) {
+								return i;
+							}
 						}
 					}
 				}
 			}
 		}
-		return getBestMatch(lang1, lang2);
+		return max(getBestMatch(lang1, lang2), def);
 	}
 
 	int16_t getDefaultVideoTrack() {
@@ -307,62 +309,35 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		if (maxId < 0) {
 			maxId = minId;
 		}
-		if (maxId >= 0 || tracks.Size() == 0) {
-			return maxId;
-		} else {
-			return 0;
-		}
+		return maxId < 0 && tracks.Size() > 0 ? 0 : maxId;
 	}
 
 	int16_t getDefaultTrack(const MediaTrackKind kind) {
-		if (state > 1) {
-			if (kind == MediaTrackKind::Audio) {
-				if (preferredAudioLanguage.empty()) {
-					auto langs = GlobalizationPreferences::Languages();
-					for (auto lang : langs) {
-						auto str = to_string(lang);
-						transform(str.begin(), str.end(), str.begin(), lower);
-						auto index = getDefaultAudioTrack(str);
-						if (index >= 0) {
-							return index;
-						}
-					}
-				} else {
-					auto index = getDefaultAudioTrack(preferredAudioLanguage);
+		if (kind == MediaTrackKind::Video) {
+			return getDefaultAudioTrack(preferredAudioLanguage);
+		} else {
+			int16_t index = -1;
+			auto isSubtitle = kind == MediaTrackKind::TimedMetadata;
+			if ((isSubtitle ? preferredSubtitleLanguage : preferredAudioLanguage).empty()) {
+				auto langs = GlobalizationPreferences::Languages();
+				for (auto lang : langs) {
+					auto str = to_string(lang);
+					transform(str.begin(), str.end(), str.begin(), lower);
+					index = isSubtitle ? getDefaultSubtitleTrack(str) : getDefaultAudioTrack(str);
 					if (index >= 0) {
-						return index;
-					}
-				}
-			} else if (kind == MediaTrackKind::TimedMetadata) {
-				if (preferredSubtitleLanguage.empty()) {
-					auto langs = GlobalizationPreferences::Languages();
-					for (auto lang : langs) {
-						auto str = to_string(lang);
-						transform(str.begin(), str.end(), str.begin(), lower);
-						auto index = getDefaultSubtitleTrack(str);
-						if (index >= 0) {
-							return index;
-						}
-					}
-				} else {
-					auto index = getDefaultSubtitleTrack(preferredSubtitleLanguage);
-					if (index >= 0) {
-						return index;
+						break;
 					}
 				}
 			} else {
-				auto index = getDefaultVideoTrack();
-				if (index >= 0) {
-					return index;
-				}
+				index = isSubtitle ? getDefaultSubtitleTrack(preferredSubtitleLanguage) : getDefaultAudioTrack(preferredAudioLanguage);
 			}
+			return index;
 		}
-		return -1;
 	}
 
 	void setPosition() {
 		if (!mediaPlayer.RealTimePlayback()) {
-			auto pos = playbackSession.Position().count() / 10000;
+			auto pos = mediaPlayer.PlaybackSession().Position().count() / 10000;
 			if (pos != position) {
 				position = pos;
 				if (eventSink) {
@@ -381,11 +356,6 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 			state = 2;
 			mediaPlayer.Volume(volume);
 			playbackSession.PlaybackRate(speed);
-			auto duration = playbackSession.NaturalDuration().count();
-			if (duration == INT64_MAX) {
-				duration = 0;
-			}
-			mediaPlayer.RealTimePlayback(duration == 0);
 			EncodableMap audioTracks{};
 			EncodableMap subtitleTracks{};
 			auto item = mediaPlayer.Source().as<MediaPlaybackItem>();
@@ -438,7 +408,7 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 					{ string("event"), string("mediaInfo") },
 					{ string("audioTracks"), audioTracks },
 					{ string("subtitleTracks"), subtitleTracks },
-					{ string("duration"), EncodableValue(duration / 10000) },
+					{ string("duration"), EncodableValue(mediaPlayer.RealTimePlayback() ? 0 : playbackSession.NaturalDuration().count() / 10000) },
 					{ string("source"), source }
 				});
 				setPosition();
@@ -446,7 +416,8 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 		}
 	}
 
-	public:
+public:
+
 	static void initGlobal() {
 		//init_apartment(apartment_type::single_threaded);
 		dispatcherQueue = DispatcherQueue::GetForCurrentThread();
@@ -513,10 +484,11 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 			subtitleSurface.Close();
 		}
 		if (eventSink) {
-			eventSink->EndOfStream();
+			//eventSink->EndOfStream();
+			eventSink = nullptr;
 		}
 		if (eventChannel) {
-			eventChannel->SetStreamHandler(nullptr);
+			//eventChannel->SetStreamHandler(nullptr);
 			delete eventChannel;
 		}
 	}
@@ -682,17 +654,21 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 
 		mediaPlayer.MediaOpened([weakThis](auto, auto) {
 			auto sharedThis = weakThis.lock();
-			auto playbackSession = mediaPlayer.PlaybackSession();
-			if (sharedThis && position > 0 && playbackSession.NaturalDuration().count() != INT64_MAX) {
-				playbackSession.Position(chrono::milliseconds(position));
-				position = 0;
-			} else {
-				dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis]() {
-					auto sharedThis = weakThis.lock();
-					if (sharedThis) {
-						sharedThis->loadEnd();
-					}
-				}));
+			if (sharedThis && sharedThis->state == 1) {
+				auto playbackSession = sharedThis->mediaPlayer.PlaybackSession();
+				auto live = playbackSession.NaturalDuration().count() == INT64_MAX;
+				sharedThis->mediaPlayer.RealTimePlayback(live);
+				if (live) {
+					dispatcherQueue.TryEnqueue(DispatcherQueueHandler([weakThis]() {
+						auto sharedThis = weakThis.lock();
+						if (sharedThis) {
+							sharedThis->loadEnd();
+						}
+					}));
+				} else {
+					playbackSession.Position(chrono::milliseconds(sharedThis->position));
+					sharedThis->position = 0;
+				}
 			}
 		});
 
@@ -865,23 +841,25 @@ class Mediaplayer : public enable_shared_from_this<Mediaplayer> {
 	}
 
 	void overrideTrack(MediaTrackKind kind, int16_t trackId, bool enabled) {
-		auto item = mediaPlayer.Source().as<MediaPlaybackItem>();
-		if (kind == MediaTrackKind::Audio) {
-			auto tracks = item.AudioTracks();
-			tracks.SelectedIndex(enabled ? trackId : max(getDefaultTrack(kind), (int16_t)0));
-			overrideAudioTrack = enabled ? trackId : -1;
-		} else if (kind == MediaTrackKind::TimedMetadata) {
-			auto tracks = item.TimedMetadataTracks();
-			if (!enabled) {
-				trackId = getDefaultTrack(kind);
-			}
-			for (uint16_t i = 0; i < tracks.Size(); i++) {
-				auto k = tracks.GetAt(i).TimedMetadataKind();
-				if (k == TimedMetadataKind::Caption || k == TimedMetadataKind::Subtitle || k == TimedMetadataKind::ImageSubtitle) {
-					tracks.SetPresentationMode(i, i == trackId ? TimedMetadataTrackPresentationMode::PlatformPresented : TimedMetadataTrackPresentationMode::Disabled);
+		if (state > 1) {
+			auto item = mediaPlayer.Source().as<MediaPlaybackItem>();
+			if (kind == MediaTrackKind::Audio) {
+				auto tracks = item.AudioTracks();
+				tracks.SelectedIndex(enabled ? trackId : max(getDefaultTrack(kind), (int16_t)0));
+				overrideAudioTrack = enabled ? trackId : -1;
+			} else if (kind == MediaTrackKind::TimedMetadata) {
+				auto tracks = item.TimedMetadataTracks();
+				if (!enabled) {
+					trackId = getDefaultTrack(kind);
 				}
+				for (uint16_t i = 0; i < tracks.Size(); i++) {
+					auto k = tracks.GetAt(i).TimedMetadataKind();
+					if (k == TimedMetadataKind::Caption || k == TimedMetadataKind::Subtitle || k == TimedMetadataKind::ImageSubtitle) {
+						tracks.SetPresentationMode(i, i == trackId ? TimedMetadataTrackPresentationMode::PlatformPresented : TimedMetadataTrackPresentationMode::Disabled);
+					}
+				}
+				overrideSubtitleTrack = enabled ? trackId : -1;
 			}
-			overrideSubtitleTrack = enabled ? trackId : -1;
 		}
 	}
 };
@@ -896,7 +874,8 @@ class MediaplayerPlugin : public Plugin {
 	string Id = "id";
 	string Value = "value";
 
-	public:
+public:
+
 	MediaplayerPlugin(PluginRegistrarWindows& registrar) {
 		Mediaplayer::initGlobal();
 		methodChannel = new MethodChannel<EncodableValue>(
@@ -974,7 +953,7 @@ class MediaplayerPlugin : public Plugin {
 
 	virtual ~MediaplayerPlugin() {
 		players.clear();
-		methodChannel->SetMethodCallHandler(nullptr);
+		//methodChannel->SetMethodCallHandler(nullptr);
 		delete methodChannel;
 		Mediaplayer::uninitGlobal();
 	}

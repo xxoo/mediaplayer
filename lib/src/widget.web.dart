@@ -19,18 +19,16 @@ Widget makeWidget(Mediaplayer player, Color backgroundColor, BoxFit videoFit) {
     if (videoFit == BoxFit.fitHeight || videoFit == BoxFit.fitWidth) {
       return LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
-          final aspectRatio =
-              player.videoSize.value.width / player.videoSize.value.height;
-          final boxAspectRatio = constraints.maxWidth / constraints.maxHeight;
-          if (boxAspectRatio > aspectRatio) {
-            player.setVideoFit(
-              videoFit == BoxFit.fitHeight ? BoxFit.contain : BoxFit.cover,
-            );
-          } else {
-            player.setVideoFit(
-              videoFit == BoxFit.fitHeight ? BoxFit.cover : BoxFit.contain,
-            );
-          }
+          player.setVideoFit(
+            constraints.maxWidth / constraints.maxHeight >
+                    player.videoSize.value.width / player.videoSize.value.height
+                ? videoFit == BoxFit.fitHeight
+                    ? BoxFit.contain
+                    : BoxFit.cover
+                : videoFit == BoxFit.fitHeight
+                ? BoxFit.cover
+                : BoxFit.contain,
+          );
           return video;
         },
       );

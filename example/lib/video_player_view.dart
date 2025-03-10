@@ -4,7 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart';
 import 'package:flutter_subtitle/flutter_subtitle.dart';
-import 'package:mediaplayer/index.dart';
+import 'package:set_state_async/set_state_async.dart';
+import 'package:mediaplayer/mediaplayer.dart';
 import 'sources.dart';
 
 class VideoPlayerView extends StatefulWidget {
@@ -19,20 +20,18 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
   final _player = Mediaplayer(initSource: videoSources.first);
   SubtitleController? _subtitleController;
 
-  void _update() => setState(() {});
-
   @override
   initState() {
     super.initState();
-    _player.playbackState.addListener(_update);
-    _player.position.addListener(_update);
-    _player.speed.addListener(_update);
-    _player.volume.addListener(_update);
-    _player.mediaInfo.addListener(_update);
-    _player.videoSize.addListener(_update);
-    _player.loading.addListener(_update);
-    _player.looping.addListener(_update);
-    _player.autoPlay.addListener(_update);
+    _player.playbackState.addListener(setStateAsync);
+    _player.position.addListener(setStateAsync);
+    _player.speed.addListener(setStateAsync);
+    _player.volume.addListener(setStateAsync);
+    _player.mediaInfo.addListener(setStateAsync);
+    _player.videoSize.addListener(setStateAsync);
+    _player.loading.addListener(setStateAsync);
+    _player.looping.addListener(setStateAsync);
+    _player.autoPlay.addListener(setStateAsync);
     _player.error.addListener(() {
       if (_player.error.value != null) {
         debugPrint('Error: ${_player.error.value}');
@@ -41,15 +40,14 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
     _player.bufferRange.addListener(() {
       if (_player.bufferRange.value != BufferRange.empty) {
         debugPrint(
-          'position: ${_player.position.value} buffer start: ${_player.bufferRange.value.start} buffer end: ${_player.bufferRange.value.end}',
-        );
+            'position: ${_player.position.value} buffer start: ${_player.bufferRange.value.start} buffer end: ${_player.bufferRange.value.end}');
       }
     });
   }
 
   @override
   void dispose() {
-    //We should dispose this player. cause it's managed by the user.
+    //We should dispose this player. cause it's created by user.
     _player.dispose();
     super.dispose();
   }
@@ -64,23 +62,19 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Row(
-                    children: [
-                      Checkbox(
-                        value: _player.autoPlay.value,
-                        onChanged: (value) =>
-                            _player.setAutoPlay(value ?? false),
-                      ),
-                      const Text('Autoplay'),
-                      const Spacer(),
-                      Checkbox(
-                        value: _player.looping.value,
-                        onChanged: (value) =>
-                            _player.setLooping(value ?? false),
-                      ),
-                      const Text('Playback loop'),
-                    ],
-                  ),
+                  Row(children: [
+                    Checkbox(
+                      value: _player.autoPlay.value,
+                      onChanged: (value) => _player.setAutoPlay(value ?? false),
+                    ),
+                    const Text('Autoplay'),
+                    const Spacer(),
+                    Checkbox(
+                      value: _player.looping.value,
+                      onChanged: (value) => _player.setLooping(value ?? false),
+                    ),
+                    const Text('Playback loop'),
+                  ]),
                   const SizedBox(height: 16),
                   TextField(
                     decoration: const InputDecoration(
@@ -91,17 +85,16 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
                     onSubmitted: (value) async {
                       if (value.isNotEmpty && Uri.tryParse(value) != null) {
                         final response = await get(Uri.parse(value));
-                        setState(
-                          () => _subtitleController = SubtitleController.string(
-                            response.body,
-                            format: value.endsWith('.srt')
-                                ? SubtitleFormat.srt
-                                : SubtitleFormat.webvtt,
-                          ),
+                        _subtitleController = SubtitleController.string(
+                          response.body,
+                          format: value.endsWith('.srt')
+                              ? SubtitleFormat.srt
+                              : SubtitleFormat.webvtt,
                         );
                       } else {
-                        setState(() => _subtitleController = null);
+                        _subtitleController = null;
                       }
+                      setStateAsync();
                     },
                   ),
                   AspectRatio(
@@ -117,7 +110,10 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
                             _player.videoSize.value == Size.zero)
                           const Text(
                             'Audio only',
-                            style: TextStyle(color: Colors.white, fontSize: 24),
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                            ),
                           ),
                         if (_subtitleController != null)
                           SubtitleControllView(
@@ -136,103 +132,80 @@ class _VideoPlayerViewState extends State<VideoPlayerView> with SetStateAsync {
                     onChanged: (value) => _player.seekTo(value.toInt()),
                   ),
                   const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Text(
-                        _formatDuration(
-                          Duration(milliseconds: _player.position.value),
-                        ),
-                      ),
+                  Row(children: [
+                    Text(_formatDuration(
+                        Duration(milliseconds: _player.position.value))),
+                    const Spacer(),
+                    Text(_player.error.value ??
+                        '${_player.videoSize.value.width.toInt()}x${_player.videoSize.value.height.toInt()}'),
+                    const Spacer(),
+                    Text(_formatDuration(Duration(
+                        milliseconds: _player.mediaInfo.value?.duration ?? 0))),
+                  ]),
+                  Row(children: [
+                    IconButton(
+                      icon: const Icon(Icons.play_arrow),
+                      onPressed: () => _player.play(),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.pause),
+                      onPressed: () => _player.pause(),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.stop),
+                      onPressed: () => _player.close(),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.fast_rewind),
+                      onPressed: () =>
+                          _player.seekTo(_player.position.value - 5000),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.fast_forward),
+                      onPressed: () =>
+                          _player.seekTo(_player.position.value + 5000),
+                    ),
+                    const Spacer(),
+                    Icon(
+                      _player.playbackState.value == PlaybackState.playing
+                          ? Icons.play_arrow
+                          : _player.playbackState.value == PlaybackState.paused
+                              ? Icons.pause
+                              : Icons.stop,
+                      size: 16.0,
+                      color: const Color(0x80000000),
+                    ),
+                    if (kIsWeb) ...[
                       const Spacer(),
-                      Text(
-                        _player.error.value ??
-                            '${_player.videoSize.value.width.toInt()}x${_player.videoSize.value.height.toInt()}',
+                      IconButton(
+                        icon: const Icon(Icons.picture_in_picture),
+                        onPressed: () => _player.setPictureInPicture(true),
                       ),
-                      const Spacer(),
-                      Text(
-                        _formatDuration(
-                          Duration(
-                            milliseconds:
-                                _player.mediaInfo.value?.duration ?? 0,
-                          ),
-                        ),
+                      IconButton(
+                        icon: const Icon(Icons.fullscreen),
+                        onPressed: () => _player.setFullscreen(true),
                       ),
                     ],
-                  ),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.play_arrow),
-                        onPressed: () => _player.play(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.pause),
-                        onPressed: () => _player.pause(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.stop),
-                        onPressed: () => _player.close(),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.fast_rewind),
-                        onPressed: () =>
-                            _player.seekTo(_player.position.value - 5000),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.fast_forward),
-                        onPressed: () =>
-                            _player.seekTo(_player.position.value + 5000),
-                      ),
-                      const Spacer(),
-                      Icon(
-                        _player.playbackState.value == PlaybackState.playing
-                            ? Icons.play_arrow
-                            : _player.playbackState.value ==
-                                    PlaybackState.paused
-                                ? Icons.pause
-                                : Icons.stop,
-                        size: 16.0,
-                        color: const Color(0x80000000),
-                      ),
-                      if (kIsWeb) ...[
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.picture_in_picture),
-                          onPressed: () => _player.setPictureInPicture(true),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.fullscreen),
-                          onPressed: () => _player.setFullscreen(true),
-                        ),
-                      ],
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      Text(
-                          'Volume: ${_player.volume.value.toStringAsFixed(2)}'),
-                      Expanded(
+                  ]),
+                  Row(children: [
+                    Text('Volume: ${_player.volume.value.toStringAsFixed(2)}'),
+                    Expanded(
                         child: Slider(
-                          value: _player.volume.value,
-                          onChanged: (value) => _player.setVolume(value),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      Text('Speed: ${_player.speed.value.toStringAsFixed(2)}'),
-                      Expanded(
+                      value: _player.volume.value,
+                      onChanged: (value) => _player.setVolume(value),
+                    )),
+                  ]),
+                  Row(children: [
+                    Text('Speed: ${_player.speed.value.toStringAsFixed(2)}'),
+                    Expanded(
                         child: Slider(
-                          value: _player.speed.value,
-                          onChanged: (value) => _player.setSpeed(value),
-                          min: 0.5,
-                          max: 2,
-                          divisions: 3,
-                        ),
-                      ),
-                    ],
-                  ),
+                      value: _player.speed.value,
+                      onChanged: (value) => _player.setSpeed(value),
+                      min: 0.5,
+                      max: 2,
+                      divisions: 3,
+                    )),
+                  ]),
                 ],
               ),
             ),

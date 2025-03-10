@@ -1,266 +1,4 @@
 globalThis.MediaplayerPlugin = class {
-	static #isSubtitle(track) {
-		return ['subtitles', 'captions', 'forced'].includes(track.kind);
-	}
-	static #getTrackId(trackList, i) {
-		return trackList[i].id ? +trackList[i].id : i;
-	}
-	static #getBestMatchByLanguage(langArr, langs) {
-		if (langs.size === 0) {
-			return -1;
-		} else {
-			const lang1 = new Map(),
-				lang2 = new Map();
-			for (const [i, t] of langs) {
-				if (langArr[0] === t[0]) {
-					lang1.set(i, t);
-					if (langArr.length > 1 && t.length > 1 && langArr[1] === t[1]) {
-						lang2.set(i, t);
-						if (langArr.length > 2 && t.length > 2 && langArr[2] === t[2]) {
-							return i;
-						}
-					}
-				}
-			}
-			let j = MediaplayerPlugin.#getBestMatch(lang2);
-			if (j < 0) {
-				j = MediaplayerPlugin.#getBestMatch(lang1);
-			}
-			return j;
-		}
-	}
-	static #getBestMatch(langs) {
-		if (langs.size === 1) {
-			return langs.keys().next().value;
-		} if (langs.size > 1) {
-			let count = 3,
-				j = 0;
-			for (const [i, t] of langs) {
-				if (t.length < count) {
-					j = i;
-					count = t.length;
-				}
-			}
-			return j;
-		} else {
-			return -1;
-		}
-	}
-	#dom;
-	#hls;
-	#dash;
-	#state = 0; //0: idle, 1: opening, 2: ready, 3: playing
-	#looping = false;
-	#autoPlay = false;
-	#playTime = 0;
-	#preferredAudioLanguage = '';
-	#preferredSubtitleLanguage = '';
-	#maxBitrate = Infinity;
-	#maxVideoWidth = Infinity;
-	#maxVideoHeight = Infinity;
-	#overrideAudioTrack = -1;
-	#overrideSubtitleTrack = -1;
-	#showSubtitle = false;
-	#live = false;
-	#source = '';
-	#initPosition = 0;
-	#sendMessage;
-	#fullscreenChange = e => {
-		if (document.fullscreenElement === this.#dom) {
-			this.#dom.style.pointerEvents = 'auto';
-			this.#dom.controls = true;
-			this.#dom.oncontextmenu = e => e.preventDefault();
-			this.#sendFullscreen(true);
-		} else if (!document.fullscreenElement && e.target === this.#dom) {
-			this.#dom.style.pointerEvents = 'none';
-			this.#dom.controls = false;
-			this.#dom.oncontextmenu = null;
-			this.#sendFullscreen(false);
-		}
-	};
-	#pictureInPictureChange = e => {
-		let v;
-		if (document.pictureInPictureElement === this.#dom) {
-			v = true;
-		} else if (!document.pictureInPictureElement && e.target === this.#dom) {
-			v = false;
-		}
-		if (v !== undefined) {
-			this.#sendMessage({
-				event: 'pictureInPicture',
-				value: v
-			});
-		}
-	};
-	#unmute = () => {
-		this.#dom.muted = false;
-		const option = { capture: true };
-		removeEventListener('keydown', this.#unmute, option);
-		removeEventListener('keyup', this.#unmute, option);
-		removeEventListener('mousedown', this.#unmute, option);
-		removeEventListener('mouseup', this.#unmute, option);
-		removeEventListener('touchstart', this.#unmute, option);
-		removeEventListener('touchend', this.#unmute, option);
-		removeEventListener('touchmove', this.#unmute, option);
-	};
-	#sendSize() {
-		this.#sendMessage({
-			event: 'videoSize',
-			width: this.#dom.videoWidth,
-			height: this.#dom.videoHeight
-		});
-	}
-	#sendPosition() {
-		this.#sendMessage({
-			event: 'position',
-			value: this.#dom.currentTime * 1000 | 0
-		});
-	}
-	#sendFullscreen(fullscreen) {
-		this.#sendMessage({
-			event: 'fullscreen',
-			value: fullscreen
-		});
-	}
-	#checkBuffer() {
-		if (!this.#live) {
-			for (let i = 0; i < this.#dom.buffered.length; i++) {
-				const end = this.#dom.buffered.end(i);
-				if (this.#dom.buffered.start(i) <= this.#dom.currentTime && end >= this.#dom.currentTime) {
-					this.#sendMessage({
-						event: 'buffer',
-						start: this.#dom.currentTime * 1000 | 0,
-						end: end * 1000 | 0
-					});
-					break;
-				}
-			}
-		}
-	}
-
-	#getDefaultAudioTrack = lang => {
-		const langs = new Map(this.#hls ? this.#hls.audioTracks.map((v, i) => [i, v.lang ? v.lang.split('-') : []]) : this.#dash ? this.#dash.getTracksFor('audio').map(v => [v.index, v.lang ? v.lang.split('-') : []]) : Array.prototype.map.call(this.#dom.audioTracks ?? [], (v, i) => [v.id ? +v.id : i, v.language.split('-')]));
-		if (langs.size === 0) {
-			return -1;
-		} else {
-			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
-			if (j < 0) {
-				if (this.#hls) {
-					j = 0;
-					for (let i = 0; i < this.#hls.audioTracks.length; i++) {
-						if (this.#hls.audioTracks[i].default) {
-							j = i;
-						}
-					}
-				} else if (this.#dash) {
-					j = this.#dash.getTracksFor('audio').sort((a, b) => a.selectionPriority - b.selectionPriority)[0].index;
-				} else if (this.#dom.audioTracks) {
-					for (let i = 0; i < this.#dom.audioTracks.length; i++) {
-						if (j < 0 || this.#dom.audioTracks[i].kind === 'main') {
-							j = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i);
-						}
-					}
-				}
-			}
-			return j;
-		}
-	};
-	#getDefaultSubtitleTrack = lang => {
-		const langs = new Map(Array.prototype.map.call(this.#dom.textTracks, (v, i) => MediaplayerPlugin.#isSubtitle(v) ? [v.id ? +v.id : i, v.language.split('-')] : null).filter(v => v));
-		if (langs.size === 0) {
-			return -1;
-		} else {
-			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
-			if (j < 0) {
-				j = langs.keys().next().value;
-			}
-			return j;
-		}
-	};
-	#setAudioTrack(track) {
-		if (this.#hls) {
-			this.#hls.audioTrack = track;
-		} else if (this.#dash) {
-			this.#dash.setCurrentTrack(this.#dash.getTracksFor('audio').filter(v => v.index === track)[0]);
-		} else if (this.#dom.audioTracks) {
-			for (let i = 0; i < this.#dom.audioTracks.length; i++) {
-				this.#dom.audioTracks[i].enabled = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i) === track;
-			}
-		}
-	};
-	#setSubtitleTrack(track) {
-		for (let i = 0; i < this.#dom.textTracks.length; i++) {
-			this.#dom.textTracks[i].mode = MediaplayerPlugin.#getTrackId(this.#dom.textTracks, i) === track ? 'showing' : 'disabled';
-		}
-	};
-	#setMaxVideoTrack() {
-		if (this.#hls) {
-			if (this.#maxVideoWidth === Infinity && this.#maxVideoHeight === Infinity && this.#maxBitrate === Infinity) {
-				this.#hls.autoLevelCapping = -1;
-			} else {
-				for (let i = this.#hls.levels.length - 1; i >= 0; i--) {
-					if (this.#hls.levels[i].height <= this.#maxVideoHeight && this.#hls.levels[i].width <= this.#maxVideoWidth && this.#hls.levels[i].bitrate <= this.#maxBitrate) {
-						this.#hls.autoLevelCapping = i;
-					}
-				}
-			}
-		}
-	}
-	#getDefaultTrack(type) { // 1: audio, 2: subtitle
-		const lang = type === 1 ? this.#preferredAudioLanguage : this.#preferredSubtitleLanguage,
-			getDefaultTrack = type === 1 ? this.#getDefaultAudioTrack : this.#getDefaultSubtitleTrack;
-		if (lang) {
-			const j = getDefaultTrack(lang);
-			if (j >= 0) {
-				return j;
-			}
-		}
-		for (let i = 0; i < navigator.languages.length; i++) {
-			const j = getDefaultTrack(navigator.languages[i].toLowerCase());
-			if (j >= 0) {
-				return j;
-			}
-		}
-		return getDefaultTrack();
-	}
-	#setDefaultTrack(type) {
-		if (type === 0) {
-			this.#hls.currentLevel = this.#hls.nextLevel = this.#hls.loadLevel = -1;
-		} else if (type === 1) {
-			this.#overrideAudioTrack = -1;
-			this.#setAudioTrack(this.#getDefaultTrack(type));
-		} else {
-			this.#overrideSubtitleTrack = -1;
-			this.#setSubtitleTrack(this.#showSubtitle ? this.#getDefaultTrack(type) : -1);
-		}
-	}
-	#play() {
-		const state = this.#state;
-		this.#dom.play().catch(e => {
-			if (this.#state === state) {
-				// browser may require user interaction to play media with sound
-				// in this case, we can play the media muted first and then unmute it when user interacts with the page
-				if (e.name === 'NotAllowedError') {
-					if (!this.#dom.muted) {
-						this.#dom.muted = true;
-						const option = {
-							capture: true,
-							passive: true
-						};
-						addEventListener('keydown', this.#unmute, option);
-						addEventListener('keyup', this.#unmute, option);
-						addEventListener('mousedown', this.#unmute, option);
-						addEventListener('mouseup', this.#unmute, option);
-						addEventListener('touchstart', this.#unmute, option);
-						addEventListener('touchend', this.#unmute, option);
-						addEventListener('touchmove', this.#unmute, option);
-					}
-					this.#play();
-				}
-			}
-		});
-	}
-
 	constructor(sendMessage) { // sendMessage: callback function from dart side
 		this.#sendMessage = sendMessage;
 		this.#dom = document.createElement('video');
@@ -751,6 +489,266 @@ globalThis.MediaplayerPlugin = class {
 		} else {
 			this.#overrideSubtitleTrack = +trackId;
 			this.#setSubtitleTrack(this.#overrideSubtitleTrack);
+		}
+	}
+	#dom;
+	#hls;
+	#dash;
+	#state = 0; //0: idle, 1: opening, 2: ready, 3: playing
+	#looping = false;
+	#autoPlay = false;
+	#playTime = 0;
+	#preferredAudioLanguage = '';
+	#preferredSubtitleLanguage = '';
+	#maxBitrate = Infinity;
+	#maxVideoWidth = Infinity;
+	#maxVideoHeight = Infinity;
+	#overrideAudioTrack = -1;
+	#overrideSubtitleTrack = -1;
+	#showSubtitle = false;
+	#live = false;
+	#source = '';
+	#initPosition = 0;
+	#sendMessage;
+	#fullscreenChange = e => {
+		if (document.fullscreenElement === this.#dom) {
+			this.#dom.style.pointerEvents = 'auto';
+			this.#dom.controls = true;
+			this.#dom.oncontextmenu = e => e.preventDefault();
+			this.#sendFullscreen(true);
+		} else if (!document.fullscreenElement && e.target === this.#dom) {
+			this.#dom.style.pointerEvents = 'none';
+			this.#dom.controls = false;
+			this.#dom.oncontextmenu = null;
+			this.#sendFullscreen(false);
+		}
+	};
+	#pictureInPictureChange = e => {
+		let v;
+		if (document.pictureInPictureElement === this.#dom) {
+			v = true;
+		} else if (!document.pictureInPictureElement && e.target === this.#dom) {
+			v = false;
+		}
+		if (v !== undefined) {
+			this.#sendMessage({
+				event: 'pictureInPicture',
+				value: v
+			});
+		}
+	};
+	#unmute = () => {
+		this.#dom.muted = false;
+		const option = { capture: true };
+		removeEventListener('keydown', this.#unmute, option);
+		removeEventListener('keyup', this.#unmute, option);
+		removeEventListener('mousedown', this.#unmute, option);
+		removeEventListener('mouseup', this.#unmute, option);
+		removeEventListener('touchstart', this.#unmute, option);
+		removeEventListener('touchend', this.#unmute, option);
+		removeEventListener('touchmove', this.#unmute, option);
+	};
+	#getDefaultAudioTrack = lang => {
+		const langs = new Map(this.#hls ? this.#hls.audioTracks.map((v, i) => [i, v.lang ? v.lang.split('-') : []]) : this.#dash ? this.#dash.getTracksFor('audio').map(v => [v.index, v.lang ? v.lang.split('-') : []]) : Array.prototype.map.call(this.#dom.audioTracks ?? [], (v, i) => [v.id ? +v.id : i, v.language.split('-')]));
+		if (langs.size === 0) {
+			return -1;
+		} else {
+			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
+			if (j < 0) {
+				if (this.#hls) {
+					j = 0;
+					for (let i = 0; i < this.#hls.audioTracks.length; i++) {
+						if (this.#hls.audioTracks[i].default) {
+							j = i;
+						}
+					}
+				} else if (this.#dash) {
+					j = this.#dash.getTracksFor('audio').sort((a, b) => a.selectionPriority - b.selectionPriority)[0].index;
+				} else if (this.#dom.audioTracks) {
+					for (let i = 0; i < this.#dom.audioTracks.length; i++) {
+						if (j < 0 || this.#dom.audioTracks[i].kind === 'main') {
+							j = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i);
+						}
+					}
+				}
+			}
+			return j;
+		}
+	};
+	#getDefaultSubtitleTrack = lang => {
+		const langs = new Map(Array.prototype.map.call(this.#dom.textTracks, (v, i) => MediaplayerPlugin.#isSubtitle(v) ? [v.id ? +v.id : i, v.language.split('-')] : null).filter(v => v));
+		if (langs.size === 0) {
+			return -1;
+		} else {
+			let j = lang ? MediaplayerPlugin.#getBestMatchByLanguage(lang.split('-'), langs) : -1;
+			if (j < 0) {
+				j = langs.keys().next().value;
+			}
+			return j;
+		}
+	};
+	#sendSize() {
+		this.#sendMessage({
+			event: 'videoSize',
+			width: this.#dom.videoWidth,
+			height: this.#dom.videoHeight
+		});
+	}
+	#sendPosition() {
+		this.#sendMessage({
+			event: 'position',
+			value: this.#dom.currentTime * 1000 | 0
+		});
+	}
+	#sendFullscreen(fullscreen) {
+		this.#sendMessage({
+			event: 'fullscreen',
+			value: fullscreen
+		});
+	}
+	#checkBuffer() {
+		if (!this.#live) {
+			for (let i = 0; i < this.#dom.buffered.length; i++) {
+				const end = this.#dom.buffered.end(i);
+				if (this.#dom.buffered.start(i) <= this.#dom.currentTime && end >= this.#dom.currentTime) {
+					this.#sendMessage({
+						event: 'buffer',
+						start: this.#dom.currentTime * 1000 | 0,
+						end: end * 1000 | 0
+					});
+					break;
+				}
+			}
+		}
+	}
+	#setAudioTrack(track) {
+		if (this.#hls) {
+			this.#hls.audioTrack = track;
+		} else if (this.#dash) {
+			this.#dash.setCurrentTrack(this.#dash.getTracksFor('audio').filter(v => v.index === track)[0]);
+		} else if (this.#dom.audioTracks) {
+			for (let i = 0; i < this.#dom.audioTracks.length; i++) {
+				this.#dom.audioTracks[i].enabled = MediaplayerPlugin.#getTrackId(this.#dom.audioTracks, i) === track;
+			}
+		}
+	};
+	#setSubtitleTrack(track) {
+		for (let i = 0; i < this.#dom.textTracks.length; i++) {
+			this.#dom.textTracks[i].mode = MediaplayerPlugin.#getTrackId(this.#dom.textTracks, i) === track ? 'showing' : 'disabled';
+		}
+	};
+	#setMaxVideoTrack() {
+		if (this.#hls) {
+			if (this.#maxVideoWidth === Infinity && this.#maxVideoHeight === Infinity && this.#maxBitrate === Infinity) {
+				this.#hls.autoLevelCapping = -1;
+			} else {
+				for (let i = this.#hls.levels.length - 1; i >= 0; i--) {
+					if (this.#hls.levels[i].height <= this.#maxVideoHeight && this.#hls.levels[i].width <= this.#maxVideoWidth && this.#hls.levels[i].bitrate <= this.#maxBitrate) {
+						this.#hls.autoLevelCapping = i;
+					}
+				}
+			}
+		}
+	}
+	#getDefaultTrack(type) { // 1: audio, 2: subtitle
+		const lang = type === 1 ? this.#preferredAudioLanguage : this.#preferredSubtitleLanguage,
+			getDefaultTrack = type === 1 ? this.#getDefaultAudioTrack : this.#getDefaultSubtitleTrack;
+		if (lang) {
+			const j = getDefaultTrack(lang);
+			if (j >= 0) {
+				return j;
+			}
+		}
+		for (let i = 0; i < navigator.languages.length; i++) {
+			const j = getDefaultTrack(navigator.languages[i].toLowerCase());
+			if (j >= 0) {
+				return j;
+			}
+		}
+		return getDefaultTrack();
+	}
+	#setDefaultTrack(type) {
+		if (type === 0) {
+			this.#hls.currentLevel = this.#hls.nextLevel = this.#hls.loadLevel = -1;
+		} else if (type === 1) {
+			this.#overrideAudioTrack = -1;
+			this.#setAudioTrack(this.#getDefaultTrack(type));
+		} else {
+			this.#overrideSubtitleTrack = -1;
+			this.#setSubtitleTrack(this.#showSubtitle ? this.#getDefaultTrack(type) : -1);
+		}
+	}
+	#play() {
+		const state = this.#state;
+		this.#dom.play().catch(e => {
+			if (this.#state === state) {
+				// browser may require user interaction to play media with sound
+				// in this case, we can play the media muted first and then unmute it when user interacts with the page
+				if (e.name === 'NotAllowedError') {
+					if (!this.#dom.muted) {
+						this.#dom.muted = true;
+						const option = {
+							capture: true,
+							passive: true
+						};
+						addEventListener('keydown', this.#unmute, option);
+						addEventListener('keyup', this.#unmute, option);
+						addEventListener('mousedown', this.#unmute, option);
+						addEventListener('mouseup', this.#unmute, option);
+						addEventListener('touchstart', this.#unmute, option);
+						addEventListener('touchend', this.#unmute, option);
+						addEventListener('touchmove', this.#unmute, option);
+					}
+					this.#play();
+				}
+			}
+		});
+	}
+	static #isSubtitle(track) {
+		return ['subtitles', 'captions', 'forced'].includes(track.kind);
+	}
+	static #getTrackId(trackList, i) {
+		return trackList[i].id ? +trackList[i].id : i;
+	}
+	static #getBestMatchByLanguage(langArr, langs) {
+		if (langs.size === 0) {
+			return -1;
+		} else {
+			const lang1 = new Map(),
+				lang2 = new Map();
+			for (const [i, t] of langs) {
+				if (langArr[0] === t[0]) {
+					lang1.set(i, t);
+					if (langArr.length > 1 && t.length > 1 && langArr[1] === t[1]) {
+						lang2.set(i, t);
+						if (langArr.length > 2 && t.length > 2 && langArr[2] === t[2]) {
+							return i;
+						}
+					}
+				}
+			}
+			let j = MediaplayerPlugin.#getBestMatch(lang2);
+			if (j < 0) {
+				j = MediaplayerPlugin.#getBestMatch(lang1);
+			}
+			return j;
+		}
+	}
+	static #getBestMatch(langs) {
+		if (langs.size === 1) {
+			return langs.keys().next().value;
+		} if (langs.size > 1) {
+			let count = 3,
+				j = 0;
+			for (const [i, t] of langs) {
+				if (t.length < count) {
+					j = i;
+					count = t.length;
+				}
+			}
+			return j;
+		} else {
+			return -1;
 		}
 	}
 };

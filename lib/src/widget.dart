@@ -1,35 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:set_state_async/set_state_async.dart';
 import 'widget.web.dart' if (dart.library.io) 'widget.native.dart';
 import 'player.web.dart' if (dart.library.io) 'player.native.dart';
-
-/// This mixin is used by [MediaplayerView] to avoid [setState] issues.
-///
-/// It is recommended to add this mixin in your [StatefulWidget]'s [State] class
-/// while using [Mediaplayer] or [MediaplayerView].
-mixin SetStateAsync<T extends StatefulWidget> on State<T> {
-  final _fns = <VoidCallback>[];
-  void _runFns() {
-    for (final fn in _fns) {
-      fn();
-    }
-    _fns.clear();
-  }
-
-  /// Combine all [setState] calls within the same tick into single one.
-  /// This also makes the [setState] opearation async.
-  @override
-  void setState(VoidCallback fn) {
-    if (_fns.isEmpty) {
-      Future.microtask(() {
-        if (mounted) {
-          super.setState(_runFns);
-        }
-      });
-    }
-    _fns.add(fn);
-  }
-}
 
 /// The widget to display video for [Mediaplayer].
 class MediaplayerView extends StatefulWidget {
@@ -91,20 +64,18 @@ class _MediaplayerState extends State<MediaplayerView> with SetStateAsync {
   OverlayEntry? _overlayEntry;
 
   void _fullscreenChange() {
-    if (_player.fullscreen.value) {
-      if (_overlayEntry == null) {
-        _overlayEntry = OverlayEntry(
-          builder:
-              (context) => Container(
-                color: Colors.transparent,
-                width: double.infinity,
-                height: double.infinity,
-              ),
-        );
-        Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
-      }
-    } else {
+    if (!_player.fullscreen.value) {
       _clearOverlay();
+    } else if (_overlayEntry == null) {
+      _overlayEntry = OverlayEntry(
+        builder:
+            (context) => Container(
+              color: Colors.transparent,
+              width: double.infinity,
+              height: double.infinity,
+            ),
+      );
+      Overlay.of(context, rootOverlay: true).insert(_overlayEntry!);
     }
   }
 
@@ -112,8 +83,6 @@ class _MediaplayerState extends State<MediaplayerView> with SetStateAsync {
     _overlayEntry?.remove();
     _overlayEntry = null;
   }
-
-  void _update() => setState(() {});
 
   @override
   void initState() {
@@ -174,8 +143,8 @@ class _MediaplayerState extends State<MediaplayerView> with SetStateAsync {
     if (widget.onCreated != null) {
       widget.onCreated!(_player);
     }
-    _player.videoSize.addListener(_update);
-    _player.showSubtitle.addListener(_update);
+    _player.videoSize.addListener(setStateAsync);
+    _player.showSubtitle.addListener(setStateAsync);
     if (kIsWeb) {
       _player.fullscreen.addListener(_fullscreenChange);
     }
@@ -194,8 +163,8 @@ class _MediaplayerState extends State<MediaplayerView> with SetStateAsync {
     if (!_foreignPlayer) {
       _player.dispose();
     } else if (!_player.disposed) {
-      _player.videoSize.removeListener(_update);
-      _player.showSubtitle.removeListener(_update);
+      _player.videoSize.removeListener(setStateAsync);
+      _player.showSubtitle.removeListener(setStateAsync);
       if (kIsWeb) {
         _player.fullscreen.removeListener(_fullscreenChange);
         _clearOverlay();

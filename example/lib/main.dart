@@ -1,9 +1,9 @@
-// This example shows how to use the MediaplayerView widget to play a video from a URL.
+// This example shows how to play a video from a URL with MediaplayerView widget.
 // Which is a very basic way to use mediaplayer package.
 // For more advanced usage, see main_advanced.dart.
 
 import 'package:flutter/material.dart';
-import 'package:mediaplayer/index.dart';
+import 'package:mediaplayer/mediaplayer.dart';
 
 void main() => runApp(const MyApp());
 
@@ -24,8 +24,9 @@ class _MyAppState extends State<MyApp> {
         children: [
           MediaplayerView(
             initSource:
-                'https://stream.mux.com/v69RSHhFelSm4701snP22dYz2jICy4E4FUyk02rW4gxRM.m3u8',
+                'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8',
             initAutoPlay: true,
+            initLooping: true,
             onCreated: (player) => player.loading.addListener(
                 () => setState(() => _loading = player.loading.value)),
           ),

@@ -18,7 +18,6 @@ Widget makeWidget(Mediaplayer player, Color backgroundColor, BoxFit videoFit) =>
                   child:
                       player.subId != null && player.showSubtitle.value
                           ? Stack(
-                            textDirection: TextDirection.ltr,
                             fit: StackFit.passthrough,
                             children: [
                               Texture(textureId: player.id!),

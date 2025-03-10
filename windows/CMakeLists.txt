@@ -21,7 +21,6 @@ set(PLUGIN_NAME "mediaplayer_plugin")
 add_library(${PLUGIN_NAME} SHARED
   "mediaplayer_plugin.cpp"
 )
-
 if(MSVC)
   target_compile_options(${PLUGIN_NAME} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR=1>")
 endif()

@@ -42,8 +42,8 @@ extension type MediaplayerPlugin._(JSObject _) implements JSObject {
   external void setShowSubtitle(bool show);
   external bool setFullscreen(bool fullscreen);
   external bool setPictureInPicture(bool pictureInPicture);
-  external void setBackgroundColor(int color);
-  external void setVideoFit(String objectFit);
   external void setOverrideAudio(String? trackId);
   external void setOverrideSubtitle(String? trackId);
+  external void setBackgroundColor(int color);
+  external void setVideoFit(String objectFit);
 }

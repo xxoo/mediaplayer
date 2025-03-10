@@ -43,6 +43,8 @@ import androidx.media3.ui.SubtitleView
 import java.util.Objects
 import kotlin.math.ceil
 import kotlin.math.roundToInt
+import androidx.core.graphics.withTranslation
+import androidx.core.content.withStyledAttributes
 
 /** Paints subtitle {@link Cue}s. */
 @UnstableApi
@@ -57,8 +59,8 @@ class SubtitlePainter(context: Context) {
 	private val outlineWidth: Float
 	private val shadowRadius: Float
 	private val shadowOffset: Float
-	private val spacingMulti: Float
-	private val spacingAdd: Float
+	private var spacingMulti = 0f
+	private var spacingAdd = 0f
 
 	private val textPaint: TextPaint
 	private val windowPaint: Paint
@@ -68,25 +70,25 @@ class SubtitlePainter(context: Context) {
 	private var cueText: CharSequence? = null
 	private var cueTextAlignment: Alignment? = null
 	private var cueBitmap: Bitmap? = null
-	private var cueLine: Float = 0f
-	private var cueLineType: Int = 0
-	private var cueLineAnchor: Int = 0
-	private var cuePosition: Float = 0f
-	private var cuePositionAnchor: Int = 0
-	private var cueSize: Float = 0f
-	private var cueBitmapHeight: Float = 0f
-	private var foregroundColor: Int = 0
-	private var backgroundColor: Int = 0
-	private var windowColor: Int = 0
-	private var edgeColor: Int = 0
-	private var edgeType: Int = 0
-	private var defaultTextSizePx: Float = 0f
-	private var cueTextSizePx: Float = 0f
-	private var bottomPaddingFraction: Float = 0f
-	private var parentLeft: Int = 0
-	private var parentTop: Int = 0
-	private var parentRight: Int = 0
-	private var parentBottom: Int = 0
+	private var cueLine = 0f
+	private var cueLineType = 0
+	private var cueLineAnchor = 0
+	private var cuePosition = 0f
+	private var cuePositionAnchor = 0
+	private var cueSize = 0f
+	private var cueBitmapHeight = 0f
+	private var foregroundColor = 0
+	private var backgroundColor = 0
+	private var windowColor = 0
+	private var edgeColor = 0
+	private var edgeType = 0
+	private var defaultTextSizePx = 0f
+	private var cueTextSizePx = 0f
+	private var bottomPaddingFraction = 0f
+	private var parentLeft = 0
+	private var parentTop = 0
+	private var parentRight = 0
+	private var parentBottom = 0
 
 	// Derived drawing variables.
 	private var textLayout: StaticLayout? = null
@@ -98,12 +100,11 @@ class SubtitlePainter(context: Context) {
 
 	init {
 		val viewAttr = intArrayOf(android.R.attr.lineSpacingExtra, android.R.attr.lineSpacingMultiplier)
-		val styledAttributes = context.obtainStyledAttributes(null, viewAttr, 0, 0)
-		spacingAdd = styledAttributes.getDimensionPixelSize(0, 0).toFloat()
-		@SuppressWarnings("ResourceType")
-		spacingMulti = styledAttributes.getFloat(1, 1f)
-
-		styledAttributes.recycle()
+		context.withStyledAttributes(null, viewAttr, 0, 0) {
+			spacingAdd = getDimensionPixelSize(0, 0).toFloat()
+			@SuppressWarnings("ResourceType")
+			spacingMulti = getFloat(1, 1f)
+		}
 
 		val resources = context.resources
 		val displayMetrics = resources.displayMetrics
@@ -428,54 +429,48 @@ class SubtitlePainter(context: Context) {
 			return
 		}
 
-		val saveCount = canvas.save()
-		canvas.translate(textLeft.toFloat(), textTop.toFloat())
+		canvas.withTranslation(textLeft.toFloat(), textTop.toFloat()) {
+			if (Color.alpha(windowColor) > 0) {
+				windowPaint.color = windowColor
+				canvas.drawRect(
+					-textPaddingX.toFloat(),
+					0f,
+					textLayout.width + textPaddingX.toFloat(),
+					textLayout.height.toFloat(),
+					windowPaint
+				)
+			}
 
-		if (Color.alpha(windowColor) > 0) {
-			windowPaint.color = windowColor
-			canvas.drawRect(
-				-textPaddingX.toFloat(),
-				0f,
-				textLayout.width + textPaddingX.toFloat(),
-				textLayout.height.toFloat(),
-				windowPaint
-			)
-		}
+			if (edgeType == CaptionStyleCompat.EDGE_TYPE_OUTLINE) {
+				textPaint.strokeJoin = Join.ROUND
+				textPaint.strokeWidth = outlineWidth
+				textPaint.color = edgeColor
+				textPaint.style = Style.FILL_AND_STROKE
+				edgeLayout.draw(canvas)
+			} else if (edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW) {
+				textPaint.setShadowLayer(shadowRadius, shadowOffset, shadowOffset, edgeColor)
+			} else if (edgeType == CaptionStyleCompat.EDGE_TYPE_RAISED || edgeType == CaptionStyleCompat.EDGE_TYPE_DEPRESSED) {
+				val raised = edgeType == CaptionStyleCompat.EDGE_TYPE_RAISED
+				val colorUp = if (raised) Color.WHITE else edgeColor
+				val colorDown = if (raised) edgeColor else Color.WHITE
+				val offset = shadowRadius / 2f
+				textPaint.color = foregroundColor
+				textPaint.style = Style.FILL
+				textPaint.setShadowLayer(shadowRadius, -offset, -offset, colorUp)
+				edgeLayout.draw(canvas)
+				textPaint.setShadowLayer(shadowRadius, offset, offset, colorDown)
+			}
 
-		if (edgeType == CaptionStyleCompat.EDGE_TYPE_OUTLINE) {
-			textPaint.strokeJoin = Join.ROUND
-			textPaint.strokeWidth = outlineWidth
-			textPaint.color = edgeColor
-			textPaint.style = Style.FILL_AND_STROKE
-			edgeLayout.draw(canvas)
-		} else if (edgeType == CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW) {
-			textPaint.setShadowLayer(shadowRadius, shadowOffset, shadowOffset, edgeColor)
-		} else if (edgeType == CaptionStyleCompat.EDGE_TYPE_RAISED
-			|| edgeType == CaptionStyleCompat.EDGE_TYPE_DEPRESSED
-		) {
-			val raised = edgeType == CaptionStyleCompat.EDGE_TYPE_RAISED
-			val colorUp = if (raised) Color.WHITE else edgeColor
-			val colorDown = if (raised) edgeColor else Color.WHITE
-			val offset = shadowRadius / 2f
 			textPaint.color = foregroundColor
 			textPaint.style = Style.FILL
-			textPaint.setShadowLayer(shadowRadius, -offset, -offset, colorUp)
-			edgeLayout.draw(canvas)
-			textPaint.setShadowLayer(shadowRadius, offset, offset, colorDown)
+			textLayout.draw(canvas)
+			textPaint.setShadowLayer(0f, 0f, 0f, 0)
 		}
-
-		textPaint.color = foregroundColor
-		textPaint.style = Style.FILL
-		textLayout.draw(canvas)
-		textPaint.setShadowLayer(0f, 0f, 0f, 0)
-
-		canvas.restoreToCount(saveCount)
 	}
 
 	private fun drawBitmapLayout(canvas: Canvas) {
 		canvas.drawBitmap(cueBitmap!!, /* src= */ null, bitmapRect!!, bitmapPaint)
 	}
-
 }
 
 /** Utility class for subtitle layout logic. */

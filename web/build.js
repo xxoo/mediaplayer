@@ -115,6 +115,8 @@
 				})();
 			`;
 		await fs.promises.writeFile(path.join(__dirname, 'mediaplayer.js'), (await terser.minify(mediaplayer)).code);
+		console.log('Initializing example...');
+		child_process.execSync(`dart "${path.join(__dirname, '..', 'bin', 'webinit.dart')}" "${path.join(__dirname, '..', 'example')}"`);
 		console.log('mediaplayer.js has been generated.\nYou may update your project with this command: `dart run mediaplayer:webinit`.');
 	}
 })();
